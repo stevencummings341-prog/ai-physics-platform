@@ -22,12 +22,6 @@ def _get_app(cfg: dict) -> SimulationApp:
         _app = SimulationApp({"headless": cfg.get("headless", False)})
     return _app
 
-
-import omni
-from isaacsim.core.api import World
-from isaacsim.core.api.objects import DynamicCuboid
-from pxr import UsdLux
-
 from core.experiment_base import ExperimentBase
 from core.scene import SceneBuilder
 from core.reporter import ReportGenerator
@@ -48,9 +42,14 @@ class Experiment(ExperimentBase):
         super().__init__(config_path, overrides)
         self.cart1 = None
         self.cart2 = None
+        self.cart_size = np.array(self.cfg.get("cart_size", [0.45, 0.22, 0.15]), dtype=float)
 
     # ----------------------------------------------------------- scene
     def build_scene(self) -> None:
+        import omni
+        from isaacsim.core.api import World
+        from isaacsim.core.api.objects import DynamicCuboid
+
         cfg = self.cfg
         self.world = World(
             stage_units_in_meters=1.0,
@@ -76,14 +75,13 @@ class Experiment(ExperimentBase):
         top_z = sb.add_track(length=tl, width=tw, material=track_mat)
         sb.add_grid_markings(track_width=tw, z=top_z + 0.001)
 
-        cart_size = np.array(cfg.get("cart_size", [0.45, 0.22, 0.15]))
-        cart_z = top_z + cart_size[2] / 2 + 0.002
+        cart_z = top_z + self.cart_size[2] / 2 + 0.002
 
         self.cart1 = self.world.scene.add(
             DynamicCuboid(
                 prim_path="/World/Cart1", name="cart1",
                 position=np.array([cfg.get("cart1_x", -0.85), 0.0, cart_z]),
-                scale=cart_size,
+                scale=self.cart_size,
                 color=np.array([1.0, 0.15, 0.15]),
                 mass=cfg.get("m1", 0.25),
                 physics_material=cart_mat,
@@ -93,11 +91,53 @@ class Experiment(ExperimentBase):
             DynamicCuboid(
                 prim_path="/World/Cart2", name="cart2",
                 position=np.array([cfg.get("cart2_x", 0.35), 0.0, cart_z]),
-                scale=cart_size,
+                scale=self.cart_size,
                 color=np.array([0.15, 0.45, 1.0]),
                 mass=cfg.get("m2", 0.25),
                 physics_material=cart_mat,
             )
+        )
+
+        # ---- camera: look at the track from above-front ----
+        from core.scene import set_camera
+        mid_x = (cfg.get("cart1_x", -0.85) + cfg.get("cart2_x", 0.35)) / 2
+        set_camera(
+            eye=np.array([mid_x, -1.2, 0.6]),
+            target=np.array([mid_x, 0.0, 0.05]),
+        )
+
+    def prepare_run(self) -> None:
+        """Auto-tune sim time based on initial separation and closing speed."""
+        x1 = float(self.cfg.get("cart1_x", -0.85))
+        x2 = float(self.cfg.get("cart2_x", 0.35))
+        v1 = float(self.cfg.get("v1_init", 0.30))
+        v2 = float(self.cfg.get("v2_init", 0.00))
+        cart_length = float(self.cart_size[0])
+
+        center_distance = abs(x2 - x1)
+        surface_gap = max(0.0, center_distance - cart_length)
+        closing_speed = max(0.0, v1 - v2) if x1 <= x2 else max(0.0, v2 - v1)
+
+        self.cfg["initial_center_distance"] = center_distance
+        self.cfg["initial_surface_gap"] = surface_gap
+        self.cfg["closing_speed"] = closing_speed
+
+        base_sim_time = float(self.cfg.get("sim_time", 6.0))
+        if closing_speed > 1e-8:
+            collision_eta = surface_gap / closing_speed
+            self.cfg["estimated_collision_time"] = collision_eta
+            self.cfg["sim_time"] = max(base_sim_time, collision_eta + 2.0)
+        else:
+            self.cfg["estimated_collision_time"] = None
+            self.cfg["sim_time"] = base_sim_time
+
+        log.info(
+            "Prepared run: center_distance=%.3f m, surface_gap=%.3f m, "
+            "closing_speed=%.3f m/s, sim_time=%.2f s",
+            center_distance,
+            surface_gap,
+            closing_speed,
+            self.cfg["sim_time"],
         )
 
     def apply_initial_conditions(self) -> None:
@@ -116,6 +156,9 @@ class Experiment(ExperimentBase):
         x2 = float(self.cart2.get_world_pose()[0][0])
         v1 = float(self.cart1.get_linear_velocity()[0])
         v2 = float(self.cart2.get_linear_velocity()[0])
+        center_distance = abs(x2 - x1)
+        surface_gap = center_distance - float(self.cart_size[0])
+        closing_speed = max(0.0, v1 - v2) if x1 <= x2 else max(0.0, v2 - v1)
 
         p1, p2 = m1 * v1, m2 * v2
         ke1, ke2 = 0.5 * m1 * v1 ** 2, 0.5 * m2 * v2 ** 2
@@ -126,35 +169,54 @@ class Experiment(ExperimentBase):
             "v1": v1, "v2": v2,
             "p1": p1, "p2": p2, "p_total": p1 + p2,
             "ke1": ke1, "ke2": ke2, "ke_total": ke1 + ke2,
-            "gap": abs(x2 - x1),
+            "center_distance": center_distance,
+            "surface_gap": surface_gap,
+            "closing_speed": closing_speed,
         }
 
     # ------------------------------------------------------ analysis
     def analyze(self, df: pd.DataFrame) -> dict:
-        collision_idx = int(np.argmin(df["gap"]))
+        collision_idx = int(np.argmin(df["surface_gap"]))
         dt = self.cfg.get("physics_dt", 1 / 240)
         window = max(10, int(0.02 / dt))
+        collision_tolerance = float(self.cfg.get("collision_tolerance", 0.02))
+        min_surface_gap = float(df["surface_gap"].min())
+        collision_detected = min_surface_gap <= collision_tolerance
 
-        pre = df.iloc[max(0, collision_idx - window):collision_idx].mean(numeric_only=True)
-        post = df.iloc[collision_idx:collision_idx + window].mean(numeric_only=True)
+        if collision_detected:
+            pre_slice = df.iloc[max(0, collision_idx - window):collision_idx]
+            post_slice = df.iloc[collision_idx:collision_idx + window]
+            analysis_mode = "collision_window"
+        else:
+            pre_slice = df.iloc[:window]
+            post_slice = df.iloc[-window:]
+            analysis_mode = "full_run_fallback"
 
-        p_pre = float(pre["p_total"])
-        p_post = float(post["p_total"])
-        ke_pre = float(pre["ke_total"])
-        ke_post = float(post["ke_total"])
+        pre = pre_slice.mean(numeric_only=True)
+        post = post_slice.mean(numeric_only=True)
+
+        p_pre = float(pre.get("p_total", 0.0))
+        p_post = float(post.get("p_total", 0.0))
+        ke_pre = float(pre.get("ke_total", 0.0))
+        ke_post = float(post.get("ke_total", 0.0))
+        collision_time = float(df.iloc[collision_idx]["time"]) if collision_detected else None
 
         return {
             "m1_kg": self.cfg["m1"], "m2_kg": self.cfg["m2"],
             "restitution": self.cfg.get("restitution", 1.0),
             "v1_init": self.cfg.get("v1_init"), "v2_init": self.cfg.get("v2_init"),
-            "collision_time_s": float(df.iloc[collision_idx]["time"]),
-            "pre_v1": float(pre["v1"]), "post_v1": float(post["v1"]),
-            "pre_v2": float(pre["v2"]), "post_v2": float(post["v2"]),
+            "collision_detected": collision_detected,
+            "analysis_mode": analysis_mode,
+            "estimated_collision_time_s": self.cfg.get("estimated_collision_time"),
+            "collision_time_s": collision_time,
+            "pre_v1": float(pre.get("v1", 0.0)), "post_v1": float(post.get("v1", 0.0)),
+            "pre_v2": float(pre.get("v2", 0.0)), "post_v2": float(post.get("v2", 0.0)),
             "pre_p_total": p_pre, "post_p_total": p_post,
             "momentum_error_pct": abs((p_post - p_pre) / p_pre * 100) if p_pre != 0 else 0.0,
             "pre_ke_total": ke_pre, "post_ke_total": ke_post,
             "ke_loss_pct": max(0.0, (ke_pre - ke_post) / ke_pre * 100) if ke_pre != 0 else 0.0,
-            "min_gap": float(df["gap"].min()),
+            "min_center_distance": float(df["center_distance"].min()),
+            "min_surface_gap": min_surface_gap,
         }
 
     # --------------------------------------------------------- plots
@@ -201,6 +263,17 @@ class Experiment(ExperimentBase):
         fig2.savefig(os.path.join(self.out_dir, "total_momentum.png"), dpi=200)
         plt.close(fig2)
 
+        fig3, ax3 = plt.subplots(figsize=(10, 4))
+        ax3.plot(df["time"], df["surface_gap"], color="purple", lw=2.0)
+        ax3.axhline(0.0, color="black", lw=1.0, ls="--")
+        ax3.set_xlabel("Time (s)")
+        ax3.set_ylabel("Surface Gap (m)")
+        ax3.set_title("Surface Gap vs Time")
+        ax3.grid(True, alpha=0.3)
+        fig3.tight_layout()
+        fig3.savefig(os.path.join(self.out_dir, "surface_gap.png"), dpi=200)
+        plt.close(fig3)
+
         log.info("Plots saved to %s", self.out_dir)
 
     # --------------------------------------------------------- report
@@ -228,12 +301,20 @@ class Experiment(ExperimentBase):
         print(f"  m1 = {summary['m1_kg']} kg    m2 = {summary['m2_kg']} kg")
         print(f"  v1_init = {summary['v1_init']} m/s    v2_init = {summary['v2_init']} m/s")
         print(f"  Restitution = {summary['restitution']}")
-        print(f"  Collision time:       {summary['collision_time_s']:.3f} s")
-        print(f"  Min gap:              {summary['min_gap']:.4f} m")
+        print(f"  Collision detected:   {summary['collision_detected']}")
+        if summary["estimated_collision_time_s"] is not None:
+            print(f"  Estimated collision:  {summary['estimated_collision_time_s']:.3f} s")
+        if summary["collision_time_s"] is not None:
+            print(f"  Collision time:       {summary['collision_time_s']:.3f} s")
+        else:
+            print("  Collision time:       N/A (no collision detected)")
+        print(f"  Min center distance:  {summary['min_center_distance']:.4f} m")
+        print(f"  Min surface gap:      {summary['min_surface_gap']:.4f} m")
         print(f"  Momentum error:       {summary['momentum_error_pct']:.3f} %")
         print(f"  KE loss:              {summary['ke_loss_pct']:.2f} %")
         ctype = "elastic" if summary["ke_loss_pct"] < 1.0 else "inelastic"
         print(f"  Collision type:       {ctype}")
+        print(f"  Analysis mode:        {summary['analysis_mode']}")
         print(f"  Output:               {self.out_dir}")
         print("=========================================================\n")
 

@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import yaml
 
@@ -30,6 +29,7 @@ class ExperimentBase(ABC):
         self.out_dir: str = self._make_output_dir()
         self.world = None
         self.records: list[dict] = []
+        self.artifacts: dict[str, Any] = {}
         self._save_run_config()
 
     # ---------------------------------------------------------------- config
@@ -78,6 +78,13 @@ class ExperimentBase(ABC):
     def plot(self, df: pd.DataFrame) -> None:
         """Generate and save plots to self.out_dir."""
 
+    def prepare_run(self) -> None:
+        """Optional hook for derived classes to finalize config before run."""
+
+    def generate_report(self, summary: dict, df: pd.DataFrame) -> str | None:
+        """Optional hook for report generation."""
+        return None
+
     # ---------------------------------------------------------- run engine
     def setup(self) -> None:
         """Full scene setup (called once before first run)."""
@@ -124,12 +131,18 @@ class ExperimentBase(ABC):
     def execute(self) -> dict:
         """Full pipeline: setup → run → analyze → plot. Returns summary."""
         self.setup()
+        self.prepare_run()
+        self._save_run_config()
         df = self.run()
         summary = self.analyze(df)
-        pd.DataFrame([summary]).to_csv(
-            os.path.join(self.out_dir, "summary.csv"), index=False
-        )
+        summary_path = os.path.join(self.out_dir, "summary.csv")
+        pd.DataFrame([summary]).to_csv(summary_path, index=False)
+        self.artifacts["summary_csv"] = summary_path
+        self.artifacts["timeseries_csv"] = os.path.join(self.out_dir, "timeseries.csv")
         self.plot(df)
+        report_path = self.generate_report(summary, df)
+        if report_path:
+            self.artifacts["report_md"] = report_path
         return summary
 
     @abstractmethod

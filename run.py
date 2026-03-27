@@ -2,7 +2,8 @@
 """CLI entry point for the AI Physics Experiment Platform.
 
 Usage:
-    python run.py expt7_momentum                     # interactive defaults
+    python run.py expt1_angular_momentum              # angular momentum conservation
+    python run.py expt7_momentum                     # linear momentum conservation
     python run.py expt7_momentum --headless           # no GUI
     python run.py expt7_momentum --vr                 # enable VR streaming
     python run.py expt7_momentum --config path.yaml   # custom config
@@ -22,6 +23,7 @@ logging.basicConfig(
 log = logging.getLogger("run")
 
 EXPERIMENT_REGISTRY: dict[str, str] = {
+    "expt1_angular_momentum": "experiments.expt1_angular_momentum.sim",
     "expt7_momentum": "experiments.expt7_momentum.sim",
 }
 
@@ -62,6 +64,9 @@ def main():
     try:
         summary = expt.execute()
         expt.print_summary(summary)
+        if getattr(expt, "artifacts", None):
+            for name, path in expt.artifacts.items():
+                log.info("Artifact [%s]: %s", name, path)
     except KeyboardInterrupt:
         log.info("Interrupted by user.")
     finally:

@@ -2,10 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 import numpy as np
-from isaacsim.core.api.objects import FixedCuboid, VisualCuboid
-from isaacsim.core.api.materials import PhysicsMaterial
-from pxr import UsdLux
+
+log = logging.getLogger(__name__)
+
+
+def set_camera(eye: np.ndarray, target: np.ndarray) -> None:
+    """Position the viewport camera to look at the experiment."""
+    try:
+        from isaacsim.core.utils.viewports import set_camera_view
+        set_camera_view(eye=eye, target=target)
+        return
+    except (ImportError, Exception):
+        pass
+    try:
+        from omni.isaac.core.utils.viewports import set_camera_view
+        set_camera_view(eye=eye, target=target)
+        return
+    except (ImportError, Exception):
+        pass
+    log.warning("Could not auto-position camera. Adjust manually in the viewport.")
 
 
 class SceneBuilder:
@@ -17,6 +34,8 @@ class SceneBuilder:
 
     # --------------------------------------------------------------- lighting
     def add_dome_light(self, intensity: float = 1500.0, path: str = "/World/DomeLight"):
+        from pxr import UsdLux
+
         UsdLux.DomeLight.Define(self.stage, path).CreateIntensityAttr(intensity)
 
     # --------------------------------------------------------------- materials
@@ -24,7 +43,9 @@ class SceneBuilder:
     def frictionless_material(
         prim_path: str = "/World/Materials/Frictionless",
         restitution: float = 1.0,
-    ) -> PhysicsMaterial:
+    ):
+        from isaacsim.core.api.materials import PhysicsMaterial
+
         return PhysicsMaterial(
             prim_path=prim_path,
             static_friction=0.0,
@@ -42,6 +63,8 @@ class SceneBuilder:
         color: np.ndarray | None = None,
     ) -> float:
         """Add a horizontal track at Z=0.  Returns the Z of the track top surface."""
+        from isaacsim.core.api.objects import FixedCuboid
+
         if color is None:
             color = np.array([0.15, 0.15, 0.18])
         top_z = 0.0
@@ -80,6 +103,8 @@ class SceneBuilder:
         z: float = 0.001,
     ):
         """Visual-only tick marks on track surface (no collision)."""
+        from isaacsim.core.api.objects import VisualCuboid
+
         for i, x in enumerate(np.arange(x_range[0], x_range[1] + 0.01, spacing)):
             is_origin = abs(x) < 1e-6
             color = np.array([0.95, 0.85, 0.2]) if is_origin else np.array([0.50, 0.50, 0.50])
@@ -102,6 +127,8 @@ class SceneBuilder:
         color: np.ndarray | None = None,
         material: PhysicsMaterial | None = None,
     ):
+        from isaacsim.core.api.objects import FixedCuboid
+
         if color is None:
             color = np.array([0.10, 0.10, 0.12])
         self.world.scene.add(

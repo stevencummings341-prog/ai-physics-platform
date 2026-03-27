@@ -15,6 +15,7 @@ Verify the law of conservation of momentum in a one-dimensional collision betwee
 | Restitution coefficient | {{ "%.2f"|format(cfg.restitution) }} |
 | Physics timestep | {{ "%.6f"|format(cfg.physics_dt) }} s ({{ (1.0 / cfg.physics_dt)|int }} Hz) |
 | Simulation duration | {{ "%.1f"|format(cfg.sim_time) }} s |
+| Estimated collision time | {% if summary.estimated_collision_time_s is not none %}{{ "%.3f"|format(summary.estimated_collision_time_s) }} s{% else %}N/A{% endif %} |
 | Total data points | {{ num_steps }} |
 
 ## Theory
@@ -37,8 +38,11 @@ For a perfectly inelastic collision (restitution = 0.0), kinetic energy loss is 
 
 **Momentum conservation error:** {{ "%.3f"|format(summary.momentum_error_pct) }}%  
 **Kinetic energy loss:** {{ "%.2f"|format(summary.ke_loss_pct) }}%  
-**Collision time:** {{ "%.3f"|format(summary.collision_time_s) }} s  
-**Minimum gap at collision:** {{ "%.4f"|format(summary.min_gap) }} m  
+**Collision detected:** {{ summary.collision_detected }}  
+**Collision time:** {% if summary.collision_time_s is not none %}{{ "%.3f"|format(summary.collision_time_s) }} s{% else %}N/A{% endif %}  
+**Minimum center distance:** {{ "%.4f"|format(summary.min_center_distance) }} m  
+**Minimum surface gap:** {{ "%.4f"|format(summary.min_surface_gap) }} m  
+**Analysis mode:** {{ summary.analysis_mode }}  
 
 ## Plots
 
@@ -46,9 +50,13 @@ For a perfectly inelastic collision (restitution = 0.0), kinetic energy loss is 
 
 ![Total Momentum](total_momentum.png)
 
+![Surface Gap](surface_gap.png)
+
 ## Conclusion
 
-{% if summary.momentum_error_pct < 1.0 -%}
+{% if not summary.collision_detected -%}
+No physical collision was detected during the run. The platform therefore fell back to comparing the early-run and late-run momentum statistics instead of a true pre/post-collision window.
+{% elif summary.momentum_error_pct < 1.0 -%}
 The total system momentum was conserved within {{ "%.3f"|format(summary.momentum_error_pct) }}% error, confirming the law of conservation of momentum.
 {% else -%}
 The momentum conservation error of {{ "%.3f"|format(summary.momentum_error_pct) }}% exceeds the 1% threshold, suggesting numerical artifacts or unintended external forces.

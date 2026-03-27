@@ -1,0 +1,47 @@
+# Experiment 1 — Conservation of Angular Momentum
+# PASCO EX-5517: drop a non-rotating ring onto a spinning disk.
+
+# ---------- Disk (aluminum, on rotary sensor axle) ----------
+disk_mass: 0.120          # kg
+disk_radius: 0.125        # m  (25 cm diameter)
+disk_height: 0.010        # m  (1 cm thick)
+
+# ---------- Ring (steel, dropped onto disk) ----------
+ring_mass: 0.470          # kg
+ring_r_inner: 0.054       # m
+ring_r_outer: 0.064       # m
+ring_height: 0.020        # m  (2 cm thick)
+ring_offset_x: 0.005      # m  center-of-mass offset from rotation axis
+
+# ---------- Pulley (attached to rotary sensor, always rotates with disk) ----------
+pulley_mass: 0.020        # kg
+pulley_radius: 0.025      # m
+
+# ---------- Which object to drop: "ring" or "disk2" ----------
+drop_object: ring
+
+# ---------- Optional second disk (for disk-on-disk run) ----------
+disk2_mass: 0.120
+disk2_radius: 0.125
+disk2_height: 0.010
+
+# ---------- Initial conditions ----------
+omega_init: 25.0          # rad/s  (initial angular speed of disk, ~4 rev/s)
+
+# ---------- Timing ----------
+physics_dt: 0.004167      # 1/240 s
+render_dt:  0.016667      # 1/60 s
+pre_collision_time: 2.0   # seconds the disk spins before ring is released
+post_collision_time: 3.0  # seconds after ring release
+warmup_seconds: 0.3
+
+# ---------- Drop geometry ----------
+drop_height: 0.003        # m above disk surface (manual says 2-3 mm)
+
+# ---------- Friction between dropped object and disk ----------
+contact_static_friction: 0.8
+contact_dynamic_friction: 0.6
+
+# ---------- Display ----------
+headless: false
+enable_livestream: false

@@ -6,10 +6,11 @@ m2: 0.25
 
 # Initial X-velocities (m/s)
 v1_init: 0.30
-v2_init: 0.00
+v2_init: -0.30
 
 # Collision elasticity: 1.0 = perfectly elastic, 0.0 = perfectly inelastic
 restitution: 1.0
+collision_tolerance: 0.02
 
 # Timing
 physics_dt: 0.004167    # 1/240 s
