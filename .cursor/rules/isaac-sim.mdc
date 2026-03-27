@@ -1,0 +1,59 @@
+---
+description: Isaac Sim / PhysX coding patterns and gotchas
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Isaac Sim Patterns
+
+## Import Order (mandatory)
+
+```python
+from isaacsim import SimulationApp
+simulation_app = SimulationApp(launch_config)   # MUST be instantiated first
+
+# Only after SimulationApp is alive:
+import omni
+from isaacsim.core.api import World
+from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid, VisualCuboid
+from isaacsim.core.api.materials import PhysicsMaterial
+from pxr import UsdLux, UsdPhysics, Gf
+```
+
+## Physics Materials
+
+Every surface that contacts a dynamic body needs an explicit `PhysicsMaterial`. Without one, PhysX uses engine defaults (nonzero friction) which silently breaks momentum/energy conservation.
+
+```python
+frictionless = PhysicsMaterial(
+    prim_path="/World/Materials/Frictionless",
+    static_friction=0.0,
+    dynamic_friction=0.0,
+    restitution=1.0,       # 1.0 = elastic, 0.0 = inelastic
+)
+track = FixedCuboid(..., physics_material=frictionless)
+cart  = DynamicCuboid(..., physics_material=frictionless)
+```
+
+## Gravity
+
+```python
+world.get_physics_context().set_gravity(-9.81)   # real gravity, Z-down
+```
+
+If objects must slide horizontally, place them on a `FixedCuboid` track and use side rails to constrain lateral drift. Never disable gravity just to avoid building a support surface.
+
+## Warmup Phase
+
+After `world.reset()`, step physics for 0.3–1.0 s before applying initial velocities. This lets dynamic bodies settle onto their support surfaces under gravity so they don't "pop" at frame 1.
+
+## Shutdown
+
+Always call `simulation_app.close()` at the end. In class-based code, put it in a `shutdown()` method, never in `__del__`.
+
+## Common Pitfalls
+
+- `FixedCuboid` grid lines collide with carts → use `VisualCuboid` for decorations.
+- `render_dt = physics_dt` wastes GPU. Keep render at 60 Hz, physics at 240 Hz.
+- `set_linear_velocity()` before warmup is ignored after `world.reset()` — always set velocity after warmup.
+- `get_world_pose()` returns `(position, orientation)` — index `[0]` for position.

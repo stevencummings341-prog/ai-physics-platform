@@ -1,0 +1,65 @@
+---
+description: AI Physics Experiment Platform — project soul and architecture
+alwaysApply: true
+---
+
+# AI Physics Experiment Platform
+
+## Identity
+
+This is a GPU-accelerated physics experiment simulation platform running on a university Linux server (NVIDIA RTX 5090). It uses NVIDIA Isaac Sim (isaacsim Python API + PhysX 5) to replicate real-world physics experiments, collects quantitative data, generates publication-ready reports, and will stream to VR headsets for immersive observation.
+
+## Architecture
+
+```
+core/                    # Shared framework — never experiment-specific
+  experiment_base.py     # ExperimentBase ABC: configure → build → warmup → run → analyze → report
+  scene.py               # Reusable scene primitives: tracks, floors, lighting, grids
+  recorder.py            # DataRecorder: per-step sampling, CSV/Parquet export
+  reporter.py            # ReportGenerator: Jinja2 templates → Markdown → PDF
+  vr.py                  # VR streaming bridge (Omniverse LiveStream / CloudXR)
+experiments/             # One sub-package per experiment (expt1_free_fall/, expt7_momentum/, …)
+  <exptN>/
+    config.yaml          # All tuneable parameters — NEVER hard-code physics values in .py
+    sim.py               # ExperimentBase subclass: build_scene(), step_callback()
+    analysis.py          # Post-sim analysis, plotting, derived quantities
+configs/                 # Server-level and shared configs
+report_templates/        # Jinja2 .md.j2 templates for experiment reports
+outputs/                 # Auto-created timestamped run dirs (gitignored)
+run.py                   # CLI entry: `python run.py expt7_momentum [--headless] [--vr]`
+```
+
+## Experiment Lifecycle (every experiment follows this)
+
+1. **Configure** — load YAML config, accept CLI/VR overrides
+2. **Build Scene** — construct USD stage: lighting, ground/track, objects, materials
+3. **Warmup** — step physics with render until objects settle (gravity stabilization)
+4. **Simulate** — apply initial conditions, step loop, record data each physics tick
+5. **Analyze** — detect events (collision, apex, equilibrium), compute derived quantities
+6. **Report** — render Jinja2 template with data/plots into Markdown, optionally convert to PDF
+
+## Critical Conventions
+
+- **Gravity is ON** (`-9.81 m/s²`) in every experiment unless the experiment explicitly studies zero-g. Always provide a physical support surface (track, table, floor).
+- **Friction control** — use `PhysicsMaterial(static_friction=, dynamic_friction=, restitution=)` on every contact surface. Default to frictionless track + configurable restitution for collision experiments.
+- **VisualCuboid for decoration**, `FixedCuboid` for collision surfaces, `DynamicCuboid` for movable bodies. Never use `FixedCuboid` for non-physical decorations (grid lines, labels) — they create phantom collisions.
+- **Decouple physics/render rates** — `physics_dt = 1/240`, `render_dt = 1/60`. In VR mode, `render_dt = 1/90`.
+- **No hardcoded physics constants in Python** — masses, velocities, restitution, friction all come from YAML config.
+- **Class-based experiments** with `reset()` method — VR users must be able to re-run without restarting Isaac Sim.
+- **Reproducibility** — save the full config dict alongside every output run. Seed any RNG.
+- **English only** in all code, comments, configs, and reports.
+
+## Code Style
+
+- Python 3.10+, type hints on all public functions.
+- `import isaacsim` / `SimulationApp` MUST happen before any `omni.*` or `pxr.*` import.
+- Prefer numpy arrays over Python lists for positions/velocities.
+- Use `plt.close(fig)` after saving — never leave figures open during long sims.
+- f-strings for formatting. No print-debugging in committed code; use `logging`.
+
+## VR Readiness Checklist
+
+- All experiments are class-based with `reset()` / `run()` / `shutdown()`.
+- No blocking `input()` calls in simulation path — CLI prompts are in `run.py` only.
+- Config overrides can come from VR controller events via `vr.py` bridge.
+- LiveStream extension toggle: `CONFIG["enable_livestream"] = True`.
