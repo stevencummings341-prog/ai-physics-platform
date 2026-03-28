@@ -63,3 +63,9 @@ run.py                   # CLI entry: `python run.py expt7_momentum [--headless]
 - No blocking `input()` calls in simulation path — CLI prompts are in `run.py` only.
 - Config overrides can come from VR controller events via `vr.py` bridge.
 - LiveStream extension toggle: `CONFIG["enable_livestream"] = True`.
+
+## Continuity Requirements
+
+- Before substantial work, read `docs/PROJECT_STATE.md`, `state/active_context.json`, `docs/ROADMAP.md`, relevant `docs/handoff/` notes, and relevant ADRs.
+- Treat `AGENTS.md` and `.cursor/rules/*.mdc` as versioned repository instructions, not disposable prompts.
+- When architecture, workflow, or project focus changes, update `docs/`, `state/`, and handoff records in the same change set.

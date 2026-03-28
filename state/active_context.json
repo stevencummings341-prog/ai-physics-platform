@@ -1,0 +1,51 @@
+{
+  "last_updated": "2026-03-28",
+  "project_name": "AI Physics Experiment Platform",
+  "project_goal": "Build reproducible Isaac Sim physics experiments with reports, durable agent continuity, and future VR integration.",
+  "mandatory_read_order": [
+    "docs/PROJECT_STATE.md",
+    "state/active_context.json",
+    "docs/ROADMAP.md",
+    "docs/handoff/2026-03-28-context-foundation.md",
+    "docs/adr/ADR-0001-context-truth.md",
+    "docs/adr/ADR-0002-versioned-instructions.md",
+    "docs/experiments/EXPERIMENT_INDEX.md",
+    "AGENTS.md",
+    ".cursor/rules/project.mdc",
+    ".cursor/rules/context-handoff.mdc",
+    ".cursor/rules/isaac-sim.mdc"
+  ],
+  "current_focus": [
+    "Preserve project continuity across new agents",
+    "Keep instructions and architecture under git version control",
+    "Continue hardening expt1_angular_momentum and expt7_momentum"
+  ],
+  "experiments": {
+    "expt1_angular_momentum": {
+      "status": "in_progress",
+      "purpose": "Angular momentum conservation with teammate-authored model integration",
+      "key_pattern": "visual USD plus hidden proxy physics bodies"
+    },
+    "expt7_momentum": {
+      "status": "in_progress",
+      "purpose": "Linear momentum conservation experiment",
+      "key_pattern": "standardized experiment class plus user-friendly launcher"
+    }
+  },
+  "operating_rules": [
+    "Do not depend on prior chat as the only project memory",
+    "Record architecture or workflow decisions as ADRs",
+    "Write a handoff note when continuity would otherwise be lost",
+    "Update this file when project direction or active priorities change",
+    "Keep rule files and AGENTS.md versioned in git"
+  ],
+  "open_risks": [
+    "Continuity will decay if future sessions stop updating handoff and state files",
+    "Experiment runtime behavior still needs ongoing live Isaac Sim verification"
+  ],
+  "next_actions": [
+    "Use the mandatory read order at the start of future sessions",
+    "Add new experiment notes to docs/experiments before major implementation",
+    "Commit instruction and state changes together with related code changes"
+  ]
+}

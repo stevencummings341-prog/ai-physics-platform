@@ -5,10 +5,12 @@
 ```text
 /125090599
 ├── core/                 # Shared engine code used by all experiments
+├── docs/                 # Persistent project truth: state, roadmap, ADRs, handoffs
 ├── experiments/          # One folder per experiment
 │   ├── expt1_angular_momentum/
 │   └── expt7_momentum/
 ├── report_templates/     # Markdown report templates
+├── state/                # Machine-readable context for new agents
 ├── outputs/              # Auto-generated experiment results
 ├── run.py                # Unified non-interactive launcher
 ├── expt1_angular_momentum_sim.py   # Interactive launcher for experiment 1
@@ -49,3 +51,18 @@ python run.py expt7_momentum
 - Unsaved editor changes can still be lost, so always make sure the file is written to disk
 - For durable version history, use git commits
 - For local backup, copy the project back with `scp` or `rsync`
+
+## Agent Continuity
+
+New agents should start by reading:
+
+1. `docs/PROJECT_STATE.md`
+2. `state/active_context.json`
+3. `docs/ROADMAP.md`
+4. Latest relevant file in `docs/handoff/`
+5. Relevant ADRs in `docs/adr/`
+6. `docs/experiments/EXPERIMENT_INDEX.md`
+7. `AGENTS.md`
+8. `.cursor/rules/*.mdc`
+
+This project uses repository files, not chat history, as the durable source of agent context. If process, architecture, or active priorities change, update the continuity files and keep those updates in git history.

@@ -1,0 +1,33 @@
+{
+  "last_updated": "2026-03-28",
+  "continuity_artifacts": {
+    "project_state": "docs/PROJECT_STATE.md",
+    "roadmap": "docs/ROADMAP.md",
+    "experiment_index": "docs/experiments/EXPERIMENT_INDEX.md",
+    "active_context": "state/active_context.json",
+    "handoff_directory": "docs/handoff",
+    "adr_directory": "docs/adr",
+    "agent_instructions": "AGENTS.md",
+    "cursor_rules": [
+      ".cursor/rules/project.mdc",
+      ".cursor/rules/context-handoff.mdc",
+      ".cursor/rules/isaac-sim.mdc"
+    ]
+  },
+  "project_artifact_roots": {
+    "framework_code": "core",
+    "experiment_code": "experiments",
+    "interactive_launchers": [
+      "expt1_angular_momentum_sim.py",
+      "expt7_momentum_sim.py"
+    ],
+    "reports": "report_templates",
+    "generated_outputs": "outputs",
+    "teammate_assets": "Experiment"
+  },
+  "policy": [
+    "Continuity artifacts are version-controlled project assets",
+    "Generated outputs are not the canonical source of architecture truth",
+    "New agents should start from continuity_artifacts before exploring code"
+  ]
+}
