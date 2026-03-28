@@ -1,0 +1,132 @@
+# Blender 4.5.2 LTS MTL File: '实验3.blend'
+# www.blender.org
+
+newmtl Black_fabric
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd C:/fabric02_basecolor_diffuse.jpg
+map_Ks C:/fabric02_specular.jpg
+map_Bump -bm 1.000000 C:/fabric02_normal_opengl.jpg
+
+newmtl Blue_leather
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd C:/leather08_diffuse.jpg
+map_Ks C:/leather02_specular.jpg
+map_Bump -bm 1.000000 C:/leather02_normal_opengl.jpg
+
+newmtl Degradable_Metal
+Ns 937.375977
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.218182 0.218182 0.218182
+Ke 0.000000 0.000000 0.000000
+Ni 21.399994
+d 1.000000
+illum 3
+
+newmtl Metal
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 3
+map_Kd C:/Metal_basecolor.jpg
+map_Bump -bm 1.000000 C:/Metal_normal.jpg
+
+newmtl Old_Copper_(Copper)
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_refl C:/METALLIC_old copper.jpg
+map_Bump -bm 1.000000 C:/NORMAL_old copper.jpg
+
+newmtl Old_Metal
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd C:/Used Metal_basecolor.jpg
+map_Ns C:/Used Metal_roughness.jpg
+map_refl C:/Used Metal_metallic.jpg
+map_Bump -bm 1.000000 C:/Used Metal_normal.jpg
+
+newmtl Opaque_Plastic_Scratched
+Ns 360.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl Plastic_White_11
+Ka 0.372727 0.372727 0.372727
+Kd 0.080000 0.080000 0.080000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 3
+map_Ns -s 20 20 20 C:/plastic-smudge-smoothness copy.jpg
+map_Bump -s 20 20 20 -bm 1.000000 C:/plastic-texture-normal-1.jpg
+
+newmtl Polystyrene_Foam
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl Red_car_lights_glass
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+newmtl Scratched_black_metal
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd C:/metal03_diffuse.jpg
+map_Ns C:/metal03_roughness.jpg
+map_refl C:/metal03_metalness.jpg
+map_Bump -bm 1.000000 C:/metal03_normal_opengl.jpg
+
+newmtl Transparent_plastic_(Plastic)
+Ns 360.000000
+Ka 1.000000 1.000000 1.000000
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2

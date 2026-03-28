@@ -1,0 +1,14 @@
+# Blender 4.5.3 LTS MTL File: '实验2.blend'
+# www.blender.org
+
+newmtl Scratched_black_metal
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd C:/metal03_diffuse.jpg
+map_Ns C:/metal03_roughness.jpg
+map_refl C:/metal03_metalness.jpg
+map_Bump -bm 1.000000 C:/metal03_normal_opengl.jpg

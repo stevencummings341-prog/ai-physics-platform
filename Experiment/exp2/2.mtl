@@ -1,0 +1,25 @@
+# Blender 4.5.3 LTS MTL File: '实验2.blend'
+# www.blender.org
+
+newmtl Black_fabric.001
+Ns 250.000000
+Ka 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd C:/fabric02_basecolor_diffuse.jpg
+map_Ks C:/fabric02_specular.jpg
+map_Bump -bm 1.000000 C:/fabric02_normal_opengl.jpg
+
+newmtl Old_Metal.001
+Ka 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+map_Kd C:/Used Metal_basecolor.jpg
+map_Ns C:/Used Metal_roughness.jpg
+map_refl C:/Used Metal_metallic.jpg
+map_Bump -bm 1.000000 C:/Used Metal_normal.jpg

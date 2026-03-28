@@ -9,3 +9,5 @@ dist/
 build/
 .DS_Store
 *.log
+# Local snapshot archives (use git-tracked sources instead)
+*_snapshot.tar.gz
