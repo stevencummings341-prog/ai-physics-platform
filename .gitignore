@@ -11,3 +11,4 @@ build/
 *.log
 # Local snapshot archives (use git-tracked sources instead)
 *_snapshot.tar.gz
+ai_physics_platform_bundle.tar.gz
