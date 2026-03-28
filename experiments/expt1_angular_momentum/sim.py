@@ -90,6 +90,7 @@ class Experiment(ExperimentBase):
         from pxr import UsdPhysics, UsdGeom, Gf, UsdLux, Usd
 
         cfg = self.cfg
+        print("[expt1] Creating World ...")
         self.world = World(
             stage_units_in_meters=1.0,
             physics_dt=cfg.get("physics_dt", 1 / 240),
@@ -127,6 +128,7 @@ class Experiment(ExperimentBase):
         ring_prim = None
 
         if has_model:
+            print(f"[expt1] Loading model: {model_path}")
             apparatus_prim = stage.DefinePrim("/World/Apparatus", "Xform")
             apparatus_prim.GetReferences().AddReference(model_path)
             log.info("Loaded teammate model from %s", model_path)
@@ -136,9 +138,15 @@ class Experiment(ExperimentBase):
                 xform = UsdGeom.Xformable(apparatus_prim)
                 xform.AddScaleOp().Set(Gf.Vec3f(model_scale, model_scale, model_scale))
 
-            disk_prim, ring_prim = self._discover_visual_prims(stage)
-            self._strip_embedded_physics(stage, apparatus_prim)
+            try:
+                disk_prim, ring_prim = self._discover_visual_prims(stage)
+                self._strip_embedded_physics(stage, apparatus_prim)
+                print(f"[expt1] Found prims: disk={disk_prim.GetPath()}, ring={ring_prim.GetPath()}")
+            except Exception as exc:
+                print(f"[expt1] WARNING: prim discovery failed ({exc}), using procedural fallback")
+                has_model = False
         else:
+            print(f"[expt1] Model not found at {model_path} — procedural fallback")
             log.warning("Model not found at %s — using procedural fallback", model_path)
 
         # ---- determine proxy positions ----
@@ -259,9 +267,9 @@ class Experiment(ExperimentBase):
             ))
 
         # ---- CRITICAL: initialize physics before creating RigidPrim wrappers ----
-        log.info("Calling world.reset() to initialize physics ...")
+        print("[expt1] Calling world.reset() ...")
         self.world.reset()
-        log.info("world.reset() completed")
+        print("[expt1] world.reset() OK")
 
         # ---- wrap physics prims (must be AFTER world.reset) ----
         try:
@@ -271,7 +279,7 @@ class Experiment(ExperimentBase):
 
         self.disk = RigidPrim(prim_path="/World/SimDiskProxy", name="disk_ctrl")
         self.drop_body = RigidPrim(prim_path="/World/SimRingProxy", name="ring_ctrl")
-        log.info("RigidPrim wrappers created successfully")
+        print("[expt1] RigidPrim wrappers OK")
 
         if has_model and disk_prim is not None:
             self.visual_disk = XFormPrim(
@@ -291,8 +299,7 @@ class Experiment(ExperimentBase):
             eye=np.array([0.4, -0.4, cam_z + 0.3]),
             target=np.array([0.0, 0.0, cam_z]),
         )
-        log.info("Scene built successfully (model=%s, disk_z=%.3f, ring_z=%.3f)",
-                 has_model, float(disk_pos[2]), float(ring_pos[2]))
+        print(f"[expt1] Scene built OK (model={has_model}, disk_z={disk_pos[2]:.3f}, ring_z={ring_pos[2]:.3f})")
 
     # ======================================================= prim discovery
     def _discover_visual_prims(self, stage):
@@ -309,9 +316,10 @@ class Experiment(ExperimentBase):
             path = str(prim.GetPath())
             all_prims.append((name, ptype, path))
 
-        log.info("Model hierarchy (%d prims):", len(all_prims))
+        print(f"[expt1] Model hierarchy ({len(all_prims)} prims):")
         for name, ptype, path in all_prims:
-            log.info("  %-25s type=%-12s %s", name, ptype, path)
+            print(f"  {name:<25s} type={ptype:<12s} {path}")
+        log.info("Model hierarchy (%d prims)", len(all_prims))
 
         disk_prim = None
         ring_prim = None
