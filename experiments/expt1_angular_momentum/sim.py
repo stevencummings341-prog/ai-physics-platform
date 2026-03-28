@@ -192,8 +192,8 @@ class Experiment(ExperimentBase):
         self._ring_hold_rot = np.array([0.0, 0.0, 0.0, 1.0])
         log.info("Proxy positions: disk=%s  ring=%s", disk_pos, ring_pos)
 
-        # ---- physics proxy bodies ----
-        self.world.scene.add(DynamicCuboid(
+        # ---- physics proxy bodies (DynamicCuboid IS a RigidPrim) ----
+        disk_dyn = self.world.scene.add(DynamicCuboid(
             prim_path="/World/SimDiskProxy", name="sim_disk_proxy",
             position=np.array(disk_pos, dtype=float),
             scale=np.array([disk_side, disk_side, disk_h]),
@@ -201,7 +201,7 @@ class Experiment(ExperimentBase):
             mass=float(cfg.get("disk_mass", 0.120)),
             physics_material=contact_mat,
         ))
-        self.world.scene.add(DynamicCuboid(
+        ring_dyn = self.world.scene.add(DynamicCuboid(
             prim_path="/World/SimRingProxy", name="sim_ring_proxy",
             position=np.array(ring_pos, dtype=float),
             scale=np.array([ring_side, ring_side, ring_h]),
@@ -266,27 +266,30 @@ class Experiment(ExperimentBase):
                 color=mc,
             ))
 
-        # ---- CRITICAL: initialize physics before creating RigidPrim wrappers ----
+        # ---- initialize physics ----
         print("[expt1] Calling world.reset() ...")
         self.world.reset()
         print("[expt1] world.reset() OK")
 
-        # ---- wrap physics prims (must be AFTER world.reset) ----
-        try:
-            from isaacsim.core.prims import RigidPrim, XFormPrim
-        except ImportError:
-            from omni.isaac.core.prims import RigidPrim, XFormPrim
+        # ---- use DynamicCuboid objects directly (they inherit RigidPrim) ----
+        self.disk = disk_dyn
+        self.drop_body = ring_dyn
+        print("[expt1] Physics objects ready")
 
-        self.disk = RigidPrim(prim_path="/World/SimDiskProxy", name="disk_ctrl")
-        self.drop_body = RigidPrim(prim_path="/World/SimRingProxy", name="ring_ctrl")
-        print("[expt1] RigidPrim wrappers OK")
-
+        # ---- wrap visual prims for pose sync ----
         if has_model and disk_prim is not None:
-            self.visual_disk = XFormPrim(
-                prim_path=str(disk_prim.GetPath()), name="vdisk")
-        if has_model and ring_prim is not None:
-            self.visual_ring = XFormPrim(
-                prim_path=str(ring_prim.GetPath()), name="vring")
+            try:
+                from isaacsim.core.prims import XFormPrim
+            except ImportError:
+                from omni.isaac.core.prims import XFormPrim
+            try:
+                self.visual_disk = XFormPrim(
+                    prim_path=str(disk_prim.GetPath()), name="vdisk")
+                self.visual_ring = XFormPrim(
+                    prim_path=str(ring_prim.GetPath()), name="vring")
+                print(f"[expt1] Visual wrappers OK")
+            except Exception as exc:
+                print(f"[expt1] Visual wrapper failed ({exc}), model won't sync")
 
         self._markers = [
             self.world.scene.get_object(f"rot_marker_{i}") for i in range(2)
