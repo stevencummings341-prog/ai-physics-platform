@@ -239,34 +239,15 @@ class Experiment(ExperimentBase):
         mass_api_r.CreateDiagonalInertiaAttr(
             Gf.Vec3f(float(ring_Ixy), float(ring_Ixy), float(ring_Iz)))
 
-        # ---- wrappers ----
-        try:
-            from isaacsim.core.prims import RigidPrim, XFormPrim
-        except ImportError:
-            from omni.isaac.core.prims import RigidPrim, XFormPrim
-
-        self.disk = self.world.scene.add(
-            RigidPrim(prim_path="/World/SimDiskProxy", name="sim_disk_rigid"))
-        self.drop_body = self.world.scene.add(
-            RigidPrim(prim_path="/World/SimRingProxy", name="sim_ring_rigid"))
-
-        if has_model and disk_prim is not None:
-            self.visual_disk = self.world.scene.add(
-                XFormPrim(prim_path=str(disk_prim.GetPath()), name="visual_disk"))
-        if has_model and ring_prim is not None:
-            self.visual_ring = self.world.scene.add(
-                XFormPrim(prim_path=str(ring_prim.GetPath()), name="visual_ring"))
-
-        # ---- rotation markers (always visible) ----
+        # ---- rotation markers (must be added before world.reset) ----
         marker_colors = [np.array([0.9, 0.1, 0.1]), np.array([0.1, 0.1, 0.9])]
         marker_r = disk_r * 0.6
-        self._markers = []
         self._marker_offsets = []
         for i, mc in enumerate(marker_colors):
             angle = i * np.pi
             offset = np.array([marker_r * np.cos(angle), marker_r * np.sin(angle)])
             self._marker_offsets.append(offset)
-            m = self.world.scene.add(VisualCuboid(
+            self.world.scene.add(VisualCuboid(
                 prim_path=f"/World/RotMarker{i}", name=f"rot_marker_{i}",
                 position=np.array([
                     float(disk_pos[0]) + offset[0],
@@ -276,15 +257,42 @@ class Experiment(ExperimentBase):
                 scale=np.array([0.02, 0.02, 0.004]),
                 color=mc,
             ))
-            self._markers.append(m)
+
+        # ---- CRITICAL: initialize physics before creating RigidPrim wrappers ----
+        log.info("Calling world.reset() to initialize physics ...")
+        self.world.reset()
+        log.info("world.reset() completed")
+
+        # ---- wrap physics prims (must be AFTER world.reset) ----
+        try:
+            from isaacsim.core.prims import RigidPrim, XFormPrim
+        except ImportError:
+            from omni.isaac.core.prims import RigidPrim, XFormPrim
+
+        self.disk = RigidPrim(prim_path="/World/SimDiskProxy", name="disk_ctrl")
+        self.drop_body = RigidPrim(prim_path="/World/SimRingProxy", name="ring_ctrl")
+        log.info("RigidPrim wrappers created successfully")
+
+        if has_model and disk_prim is not None:
+            self.visual_disk = XFormPrim(
+                prim_path=str(disk_prim.GetPath()), name="vdisk")
+        if has_model and ring_prim is not None:
+            self.visual_ring = XFormPrim(
+                prim_path=str(ring_prim.GetPath()), name="vring")
+
+        self._markers = [
+            self.world.scene.get_object(f"rot_marker_{i}") for i in range(2)
+        ]
 
         # ---- camera ----
         from core.scene import set_camera
+        cam_z = self._disk_center_z
         set_camera(
-            eye=np.array([0.4, -0.4, self._disk_center_z + 0.3]),
-            target=np.array([0.0, 0.0, self._disk_center_z]),
+            eye=np.array([0.4, -0.4, cam_z + 0.3]),
+            target=np.array([0.0, 0.0, cam_z]),
         )
-        log.info("Scene built successfully (model=%s)", has_model)
+        log.info("Scene built successfully (model=%s, disk_z=%.3f, ring_z=%.3f)",
+                 has_model, float(disk_pos[2]), float(ring_pos[2]))
 
     # ======================================================= prim discovery
     def _discover_visual_prims(self, stage):
