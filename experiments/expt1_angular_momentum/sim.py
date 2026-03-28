@@ -65,8 +65,8 @@ class Experiment(ExperimentBase):
 
         self.disk = None
         self.drop_body = None
-        self.visual_disk = None
-        self.visual_ring = None
+        self._visual_disk_path: str | None = None
+        self._visual_ring_path: str | None = None
         self._markers: list = []
         self._marker_offsets: list[np.ndarray] = []
 
@@ -210,9 +210,8 @@ class Experiment(ExperimentBase):
             physics_material=contact_mat,
         ))
 
-        if has_model:
-            UsdGeom.Imageable(stage.GetPrimAtPath("/World/SimDiskProxy")).MakeInvisible()
-            UsdGeom.Imageable(stage.GetPrimAtPath("/World/SimRingProxy")).MakeInvisible()
+        # Proxy bodies stay VISIBLE — they ARE the physics animation.
+        # The teammate model is static decoration behind them.
 
         # ---- revolute joint ----
         axle = UsdPhysics.RevoluteJoint.Define(stage, "/World/SimDiskAxle")
@@ -274,26 +273,19 @@ class Experiment(ExperimentBase):
         # ---- use DynamicCuboid objects directly (they inherit RigidPrim) ----
         self.disk = disk_dyn
         self.drop_body = ring_dyn
-        print("[expt1] Physics objects ready")
 
-        # ---- wrap visual prims for pose sync ----
+        # Store visual prim paths for USD-level pose sync (no XFormPrim needed)
         if has_model and disk_prim is not None:
-            try:
-                from isaacsim.core.prims import XFormPrim
-            except ImportError:
-                from omni.isaac.core.prims import XFormPrim
-            try:
-                self.visual_disk = XFormPrim(
-                    prim_path=str(disk_prim.GetPath()), name="vdisk")
-                self.visual_ring = XFormPrim(
-                    prim_path=str(ring_prim.GetPath()), name="vring")
-                print(f"[expt1] Visual wrappers OK")
-            except Exception as exc:
-                print(f"[expt1] Visual wrapper failed ({exc}), model won't sync")
+            self._visual_disk_path = str(disk_prim.GetPath())
+            self._visual_ring_path = str(ring_prim.GetPath())
+        else:
+            self._visual_disk_path = None
+            self._visual_ring_path = None
 
         self._markers = [
             self.world.scene.get_object(f"rot_marker_{i}") for i in range(2)
         ]
+        print("[expt1] Physics objects + markers ready")
 
         # ---- camera ----
         from core.scene import set_camera
@@ -394,12 +386,16 @@ class Experiment(ExperimentBase):
         dp = np.array(dp, dtype=float)
         dq = np.array(dq, dtype=float)
 
-        if self.visual_disk is not None:
-            try:
-                self.visual_disk.set_world_pose(dp, dq)
-            except Exception:
-                pass
+        # Sync model visual prims via USD API (no XFormPrim wrapper needed)
+        if self._visual_disk_path:
+            self._set_prim_pose(self._visual_disk_path, dp, dq)
+        if self._visual_ring_path and self.drop_body is not None:
+            rp, rq = self.drop_body.get_world_pose()
+            self._set_prim_pose(self._visual_ring_path,
+                                np.array(rp, dtype=float),
+                                np.array(rq, dtype=float))
 
+        # Sync rotation markers
         angle = 2.0 * np.arctan2(float(dq[2]), float(dq[3]))
         ca, sa = np.cos(angle), np.sin(angle)
         for marker, offset in zip(self._markers, self._marker_offsets):
@@ -411,13 +407,22 @@ class Experiment(ExperimentBase):
                 dq,
             )
 
-        if self.drop_body is not None and self.visual_ring is not None:
-            rp, rq = self.drop_body.get_world_pose()
-            try:
-                self.visual_ring.set_world_pose(
-                    np.array(rp, dtype=float), np.array(rq, dtype=float))
-            except Exception:
-                pass
+    def _set_prim_pose(self, prim_path: str, pos: np.ndarray, quat: np.ndarray) -> None:
+        """Set a prim's world transform directly via USD ops."""
+        try:
+            import omni
+            from pxr import UsdGeom, Gf
+            stage = omni.usd.get_context().get_stage()
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                return
+            xf = UsdGeom.Xformable(prim)
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+            xf.AddOrientOp().Set(Gf.Quatf(
+                float(quat[3]), float(quat[0]), float(quat[1]), float(quat[2])))
+        except Exception:
+            pass
 
     # ======================================================= lifecycle
     def warmup(self) -> None:
@@ -436,6 +441,7 @@ class Experiment(ExperimentBase):
 
     def apply_initial_conditions(self) -> None:
         omega = float(self.cfg.get("omega_init", 25.0))
+        print(f"[expt1] Setting disk omega = {omega} rad/s ...")
         self.disk.set_angular_velocity(np.array([0.0, 0.0, omega]))
 
         if self._ring_hold_pos is not None:
@@ -445,9 +451,9 @@ class Experiment(ExperimentBase):
         self._sync_visuals()
 
         actual = self.disk.get_angular_velocity()
-        log.info("Initial conditions: disk omega_z=%.2f (requested %.2f), "
-                 "ring at z=%.4f",
-                 float(actual[2]), omega, float(self._ring_hold_pos[2]))
+        print(f"[expt1] Disk omega readback: [{actual[0]:.2f}, {actual[1]:.2f}, {actual[2]:.2f}]")
+        print(f"[expt1] Ring held at z = {self._ring_hold_pos[2]:.4f}")
+        print(f"[expt1] Simulation starting ...")
 
     # ======================================================= prepare run
     def prepare_run(self) -> None:
@@ -481,6 +487,10 @@ class Experiment(ExperimentBase):
     # ======================================================= step loop
     def step_callback(self, step: int, t: float) -> dict:
         pre_t = float(self.cfg.get("pre_collision_time", 2.0))
+
+        if step < 3 or (step % 500 == 0):
+            omega_z = float(self.disk.get_angular_velocity()[2])
+            print(f"[expt1] step={step} t={t:.3f}s omega_disk={omega_z:.2f}")
 
         if t < pre_t and self._ring_hold_pos is not None:
             self.drop_body.set_world_pose(self._ring_hold_pos, self._ring_hold_rot)
