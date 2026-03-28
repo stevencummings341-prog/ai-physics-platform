@@ -56,13 +56,14 @@ python run.py expt7_momentum
 
 New agents should start by reading:
 
-1. `docs/PROJECT_STATE.md`
-2. `state/active_context.json`
-3. `docs/ROADMAP.md`
-4. Latest relevant file in `docs/handoff/`
-5. Relevant ADRs in `docs/adr/`
-6. `docs/experiments/EXPERIMENT_INDEX.md`
-7. `AGENTS.md`
-8. `.cursor/rules/*.mdc`
+1. `docs/START_HERE.md`
+2. `docs/PROJECT_STATE.md`
+3. `state/active_context.json`
+4. `docs/ROADMAP.md`
+5. `docs/handoff/LATEST.md`
+6. Relevant ADRs in `docs/adr/`
+7. `docs/experiments/EXPERIMENT_INDEX.md`
+8. `AGENTS.md`
+9. `.cursor/rules/*.mdc`
 
 This project uses repository files, not chat history, as the durable source of agent context. If process, architecture, or active priorities change, update the continuity files and keep those updates in git history.

@@ -1,11 +1,15 @@
 {
   "last_updated": "2026-03-28",
   "continuity_artifacts": {
+    "start_here": "docs/START_HERE.md",
     "project_state": "docs/PROJECT_STATE.md",
     "roadmap": "docs/ROADMAP.md",
     "experiment_index": "docs/experiments/EXPERIMENT_INDEX.md",
     "active_context": "state/active_context.json",
     "handoff_directory": "docs/handoff",
+    "latest_handoff": "docs/handoff/LATEST.md",
+    "startup_template": "docs/templates/NEW_AGENT_STARTUP_PROMPT.md",
+    "closeout_template": "docs/templates/SESSION_CLOSEOUT_CHECKLIST.md",
     "adr_directory": "docs/adr",
     "agent_instructions": "AGENTS.md",
     "cursor_rules": [

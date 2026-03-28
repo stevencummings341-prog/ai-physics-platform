@@ -14,6 +14,8 @@ Use this folder for durable session-to-session continuity.
 
 Use `YYYY-MM-DD-short-title.md`.
 
+Also keep `docs/handoff/LATEST.md` updated so fresh agents have a stable pointer.
+
 ## Minimum Content
 
 - Goal of the session

@@ -15,13 +15,14 @@ Build a reproducible AI physics experiment platform on a Linux GPU server using 
 
 Read these in order before any substantial task:
 
-1. `docs/PROJECT_STATE.md`
-2. `state/active_context.json`
-3. `docs/ROADMAP.md`
-4. Latest relevant file in `docs/handoff/`
-5. Relevant ADRs in `docs/adr/`
-6. `AGENTS.md`
-7. `.cursor/rules/*.mdc`
+1. `docs/START_HERE.md`
+2. `docs/PROJECT_STATE.md`
+3. `state/active_context.json`
+4. `docs/ROADMAP.md`
+5. `docs/handoff/LATEST.md`
+6. Relevant ADRs in `docs/adr/`
+7. `AGENTS.md`
+8. `.cursor/rules/*.mdc`
 
 ## Active Priorities
 
@@ -47,6 +48,6 @@ Read these in order before any substantial task:
 
 ## Immediate Next Steps
 
-1. Use this architecture for all future experiment work and handoffs.
+1. Use `docs/START_HERE.md` as the first step for all future sessions.
 2. When a new experiment starts, add an entry to `docs/experiments/EXPERIMENT_INDEX.md`.
 3. When a new decision changes process or structure, add an ADR before broad implementation.

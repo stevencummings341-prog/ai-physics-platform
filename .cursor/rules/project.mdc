@@ -66,6 +66,6 @@ run.py                   # CLI entry: `python run.py expt7_momentum [--headless]
 
 ## Continuity Requirements
 
-- Before substantial work, read `docs/PROJECT_STATE.md`, `state/active_context.json`, `docs/ROADMAP.md`, relevant `docs/handoff/` notes, and relevant ADRs.
+- Before substantial work, start with `docs/START_HERE.md`, then follow its read order through project state, active context, roadmap, latest handoff, and relevant ADRs.
 - Treat `AGENTS.md` and `.cursor/rules/*.mdc` as versioned repository instructions, not disposable prompts.
 - When architecture, workflow, or project focus changes, update `docs/`, `state/`, and handoff records in the same change set.

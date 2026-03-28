@@ -23,14 +23,15 @@ state/                   → Machine-readable current context and artifact manif
 
 Before any substantial task, read these files in order:
 
-1. `docs/PROJECT_STATE.md`
-2. `state/active_context.json`
-3. `docs/ROADMAP.md`
-4. Latest relevant file in `docs/handoff/`
-5. Relevant file(s) in `docs/adr/`
-6. `docs/experiments/EXPERIMENT_INDEX.md`
-7. `AGENTS.md`
-8. `.cursor/rules/*.mdc`
+1. `docs/START_HERE.md`
+2. `docs/PROJECT_STATE.md`
+3. `state/active_context.json`
+4. `docs/ROADMAP.md`
+5. `docs/handoff/LATEST.md`
+6. Relevant file(s) in `docs/adr/`
+7. `docs/experiments/EXPERIMENT_INDEX.md`
+8. `AGENTS.md`
+9. `.cursor/rules/*.mdc`
 
 Do not assume prior chat history is complete or current. Repository truth wins over chat memory.
 
@@ -69,6 +70,8 @@ Every experiment follows: **Configure → Build Scene → Warmup → Simulate �
 - Architecture and workflow decisions must be recorded in `docs/adr/`.
 - Session continuity belongs in `docs/handoff/`.
 - Current project state belongs in `docs/PROJECT_STATE.md` and `state/active_context.json`.
+- `docs/START_HERE.md` is the canonical entry point for fresh sessions.
+- `docs/handoff/LATEST.md` is the stable pointer for the newest relevant handoff.
 - Cursor rules and `AGENTS.md` are versioned project assets and must evolve with the codebase.
 - If a session changes process, architecture, or active priorities, update the continuity files in the same workstream.
 
@@ -92,5 +95,6 @@ Before ending a substantial session:
 
 1. Update `state/active_context.json` if project focus or status changed
 2. Add or update a note in `docs/handoff/` if a new agent would need context
-3. Add an ADR if an architecture or process decision changed
-4. Keep these continuity changes under git version control with the related work
+3. Update `docs/handoff/LATEST.md` if a newer handoff should become the pointer
+4. Add an ADR if an architecture or process decision changed
+5. Keep these continuity changes under git version control with the related work

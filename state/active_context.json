@@ -3,12 +3,14 @@
   "project_name": "AI Physics Experiment Platform",
   "project_goal": "Build reproducible Isaac Sim physics experiments with reports, durable agent continuity, and future VR integration.",
   "mandatory_read_order": [
+    "docs/START_HERE.md",
     "docs/PROJECT_STATE.md",
     "state/active_context.json",
     "docs/ROADMAP.md",
-    "docs/handoff/2026-03-28-context-foundation.md",
+    "docs/handoff/LATEST.md",
     "docs/adr/ADR-0001-context-truth.md",
     "docs/adr/ADR-0002-versioned-instructions.md",
+    "docs/adr/ADR-0003-single-entry-startup.md",
     "docs/experiments/EXPERIMENT_INDEX.md",
     "AGENTS.md",
     ".cursor/rules/project.mdc",
@@ -44,7 +46,7 @@
     "Experiment runtime behavior still needs ongoing live Isaac Sim verification"
   ],
   "next_actions": [
-    "Use the mandatory read order at the start of future sessions",
+    "Use docs/START_HERE.md as the first file for future sessions",
     "Add new experiment notes to docs/experiments before major implementation",
     "Commit instruction and state changes together with related code changes"
   ]

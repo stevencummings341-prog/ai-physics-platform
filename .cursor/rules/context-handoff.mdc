@@ -5,8 +5,9 @@ alwaysApply: true
 
 # Context And Handoff
 
-- Before substantial work, read `docs/PROJECT_STATE.md`, `state/active_context.json`, `docs/ROADMAP.md`, the latest relevant note in `docs/handoff/`, relevant ADRs, `AGENTS.md`, and `.cursor/rules/*.mdc`.
+- Before substantial work, start with `docs/START_HERE.md`, then follow its read order through `docs/PROJECT_STATE.md`, `state/active_context.json`, `docs/ROADMAP.md`, `docs/handoff/LATEST.md`, relevant ADRs, `AGENTS.md`, and `.cursor/rules/*.mdc`.
 - Do not trust prior chat alone when repository truth disagrees or is missing.
 - If the session changes project focus, workflow, architecture, or ownership context, update the continuity files before ending.
 - Use `docs/handoff/` for human-readable session continuity and `state/active_context.json` for machine-readable current status.
+- Keep `docs/handoff/LATEST.md` pointing at the newest relevant handoff.
 - Keep all instruction, state, and handoff changes under git version control with the related work.
