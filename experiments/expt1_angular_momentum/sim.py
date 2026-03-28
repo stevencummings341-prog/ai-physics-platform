@@ -1,17 +1,18 @@
 """Experiment 1 — Conservation of Angular Momentum.
 
-A non-rotating ring (or second disk) is dropped onto a spinning disk.
-Angular speed is measured before the drop and after the objects reach
-a common angular velocity.  Angular momentum should be conserved;
-kinetic energy should decrease (inelastic rotational collision).
+Loads the teammate-provided apparatus model (Experiment/exp1/exp1.usd)
+as visual geometry.  Hidden DynamicCuboid proxy bodies drive the physics
+simulation, and their poses are synced to the model's disk and ring
+prims every frame.  Colored rotation markers on the disk guarantee
+visible spinning even if visual sync encounters edge cases.
 
-PASCO EX-5517 reference implementation for Isaac Sim / PhysX 5.
+If the model file is missing, the experiment falls back to procedural
+geometry built entirely from Isaac Sim primitives.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import os
 
 import numpy as np
@@ -37,27 +38,22 @@ from core.reporter import ReportGenerator
 
 _DEFAULT_CONFIG = os.path.join(os.path.dirname(__file__), "config.yaml")
 
+MODEL_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "Experiment", "exp1")
+)
+MODEL_USD = os.path.join(MODEL_DIR, "exp1.usd")
 
-# ---------------------------------------------------------------------------
-# Moment-of-inertia helpers (analytical, from PASCO theory section)
-# ---------------------------------------------------------------------------
 
 def I_solid_disk(mass: float, radius: float) -> float:
-    """I = ½MR² for a solid disk about its symmetry axis."""
     return 0.5 * mass * radius ** 2
 
 
 def I_ring(mass: float, r_inner: float, r_outer: float, offset: float = 0.0) -> float:
-    """I = ½M(R₁² + R₂²) + Mx²  (Eq. 3 + 4 from PASCO manual)."""
     return 0.5 * mass * (r_inner ** 2 + r_outer ** 2) + mass * offset ** 2
 
 
-# ---------------------------------------------------------------------------
-# Experiment class
-# ---------------------------------------------------------------------------
-
 class Experiment(ExperimentBase):
-    """Drop a ring (or disk) onto a spinning disk; verify L conservation."""
+    """Drop a ring (or disk) onto a spinning disk — with teammate 3D model."""
 
     name = "expt1_angular_momentum"
 
@@ -69,6 +65,10 @@ class Experiment(ExperimentBase):
 
         self.disk = None
         self.drop_body = None
+        self.visual_disk = None
+        self.visual_ring = None
+        self._markers: list = []
+        self._marker_offsets: list[np.ndarray] = []
 
         self._I_disk = 0.0
         self._I_pulley = 0.0
@@ -79,14 +79,15 @@ class Experiment(ExperimentBase):
         self._ring_hold_pos: np.ndarray | None = None
         self._ring_hold_rot: np.ndarray | None = None
         self._disk_center_z = 0.0
+        self._disk_height = 0.01
 
-    # ---------------------------------------------------------------- scene
+    # ================================================================ scene
     def build_scene(self) -> None:
         import omni
         from isaacsim.core.api import World
-        from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid, VisualCuboid
         from isaacsim.core.api.materials import PhysicsMaterial
-        from pxr import UsdPhysics, Gf
+        from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid, VisualCuboid
+        from pxr import UsdPhysics, UsdGeom, Gf, UsdLux, Usd
 
         cfg = self.cfg
         self.world = World(
@@ -98,15 +99,15 @@ class Experiment(ExperimentBase):
         self.world.get_physics_context().set_gravity(-9.81)
 
         stage = omni.usd.get_context().get_stage()
-
-        from pxr import UsdLux
         UsdLux.DomeLight.Define(stage, "/World/DomeLight").CreateIntensityAttr(1500.0)
 
-        # ---- materials ----
-        axle_mat = PhysicsMaterial(
-            prim_path="/World/Materials/AxleMat",
-            static_friction=0.0, dynamic_friction=0.0, restitution=0.0,
-        )
+        self.world.scene.add(FixedCuboid(
+            prim_path="/World/Ground", name="ground",
+            position=np.array([0.0, 0.0, -0.01]),
+            scale=np.array([2.0, 2.0, 0.02]),
+            color=np.array([0.12, 0.12, 0.15]),
+        ))
+
         contact_mat = PhysicsMaterial(
             prim_path="/World/Materials/ContactMat",
             static_friction=cfg.get("contact_static_friction", 0.8),
@@ -114,155 +115,334 @@ class Experiment(ExperimentBase):
             restitution=0.0,
         )
 
-        # ---- table ----
-        self.world.scene.add(FixedCuboid(
-            prim_path="/World/Table", name="table",
-            position=np.array([0.0, 0.0, -0.06]),
-            scale=np.array([0.6, 0.6, 0.10]),
-            color=np.array([0.12, 0.12, 0.15]),
-        ))
-
-        # ---- stand pillar ----
-        stand_h = 0.30
-        self.world.scene.add(FixedCuboid(
-            prim_path="/World/Stand", name="stand",
-            position=np.array([0.0, 0.0, -0.01 + stand_h / 2]),
-            scale=np.array([0.03, 0.03, stand_h]),
-            color=np.array([0.40, 0.40, 0.42]),
-        ))
-
-        # ---- disk (approximated as thin, wide cuboid) ----
         disk_r = float(cfg.get("disk_radius", 0.125))
         disk_h = float(cfg.get("disk_height", 0.01))
-        disk_side = disk_r * 2
-        self._disk_center_z = stand_h - 0.01 + disk_h / 2
+        self._disk_height = disk_h
+        disk_side = 2.0 * disk_r
 
-        self.disk = self.world.scene.add(DynamicCuboid(
-            prim_path="/World/Disk", name="disk",
-            position=np.array([0.0, 0.0, self._disk_center_z]),
-            scale=np.array([disk_side, disk_side, disk_h]),
-            color=np.array([0.75, 0.75, 0.82]),
-            mass=float(cfg.get("disk_mass", 0.120)),
-            physics_material=contact_mat,
-        ))
+        # ---- try loading teammate model ----
+        model_path = cfg.get("model_usd", MODEL_USD)
+        has_model = os.path.isfile(model_path)
+        disk_prim = None
+        ring_prim = None
 
-        # Override disk inertia to match a solid cylinder
-        disk_prim = stage.GetPrimAtPath("/World/Disk")
-        disk_Iz = I_solid_disk(cfg["disk_mass"], disk_r)
-        disk_Ixy = disk_Iz / 2 + cfg["disk_mass"] * disk_h ** 2 / 12
-        mass_api = UsdPhysics.MassAPI(disk_prim)
-        mass_api.CreateDiagonalInertiaAttr(
-            Gf.Vec3f(float(disk_Ixy), float(disk_Ixy), float(disk_Iz))
-        )
+        if has_model:
+            apparatus_prim = stage.DefinePrim("/World/Apparatus", "Xform")
+            apparatus_prim.GetReferences().AddReference(model_path)
+            log.info("Loaded teammate model from %s", model_path)
 
-        # ---- revolute joint: pin disk to world, allow only Z rotation ----
-        axle_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/DiskAxle")
-        axle_joint.CreateAxisAttr("Z")
-        axle_joint.CreateBody1Rel().SetTargets(["/World/Disk"])
-        axle_joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, float(self._disk_center_z)))
-        axle_joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, 0))
-        axle_joint.CreateLocalRot0Attr(Gf.Quatf(1, 0, 0, 0))
-        axle_joint.CreateLocalRot1Attr(Gf.Quatf(1, 0, 0, 0))
+            model_scale = float(cfg.get("model_scale", 1.0))
+            if model_scale != 1.0:
+                xform = UsdGeom.Xformable(apparatus_prim)
+                xform.AddScaleOp().Set(Gf.Vec3f(model_scale, model_scale, model_scale))
 
-        # ---- drop body (ring or disk2) ----
+            disk_prim, ring_prim = self._discover_visual_prims(stage)
+            self._strip_embedded_physics(stage, apparatus_prim)
+        else:
+            log.warning("Model not found at %s — using procedural fallback", model_path)
+
+        # ---- determine proxy positions ----
+        support_h = float(cfg.get("support_height", 0.15))
+        drop_height = float(cfg.get("drop_height", 0.003))
         drop_type = str(cfg.get("drop_object", "ring"))
-        drop_h_above = float(cfg.get("drop_height", 0.003))
-        drop_z = self._disk_center_z + disk_h / 2 + drop_h_above
+        ring_offset_x = float(cfg.get("ring_offset_x", 0.005))
 
         if drop_type == "ring":
             ring_r_out = float(cfg.get("ring_r_outer", 0.064))
             ring_h = float(cfg.get("ring_height", 0.02))
-            ring_side = ring_r_out * 2
-            drop_z += ring_h / 2
+            ring_side = 2.0 * ring_r_out
+            ring_mass_val = float(cfg.get("ring_mass", 0.470))
+        else:
+            ring_r_out = float(cfg.get("disk2_radius", 0.125))
+            ring_h = float(cfg.get("disk2_height", 0.01))
+            ring_side = 2.0 * ring_r_out
+            ring_mass_val = float(cfg.get("disk2_mass", 0.120))
 
-            self.drop_body = self.world.scene.add(DynamicCuboid(
-                prim_path="/World/Ring", name="ring",
-                position=np.array([0.0, 0.0, drop_z]),
-                scale=np.array([ring_side, ring_side, ring_h]),
-                color=np.array([0.30, 0.30, 0.35]),
-                mass=float(cfg.get("ring_mass", 0.470)),
-                physics_material=contact_mat,
+        if has_model and disk_prim is not None:
+            disk_pos, disk_rot = self._get_world_pose(stage, disk_prim)
+            ring_pos, ring_rot = self._get_world_pose(stage, ring_prim)
+
+            if abs(disk_pos[2]) < 0.001 and abs(ring_pos[2]) < 0.001:
+                log.info("Model prims at origin — computing positions from config")
+                disk_pos = np.array([0.0, 0.0, support_h + disk_h / 2])
+                ring_pos = np.array([ring_offset_x, 0.0,
+                                     support_h + disk_h + ring_h / 2 + drop_height])
+        else:
+            disk_pos = np.array([0.0, 0.0, support_h + disk_h / 2])
+            ring_pos = np.array([ring_offset_x, 0.0,
+                                 support_h + disk_h + ring_h / 2 + drop_height])
+
+            self.world.scene.add(FixedCuboid(
+                prim_path="/World/Support", name="support",
+                position=np.array([0.0, 0.0, support_h / 2]),
+                scale=np.array([0.03, 0.03, support_h]),
+                color=np.array([0.4, 0.4, 0.45]),
             ))
 
-            ring_prim = stage.GetPrimAtPath("/World/Ring")
+        self._disk_center_z = float(disk_pos[2])
+        self._ring_hold_pos = np.array(ring_pos, dtype=float).copy()
+        self._ring_hold_rot = np.array([0.0, 0.0, 0.0, 1.0])
+        log.info("Proxy positions: disk=%s  ring=%s", disk_pos, ring_pos)
+
+        # ---- physics proxy bodies ----
+        self.world.scene.add(DynamicCuboid(
+            prim_path="/World/SimDiskProxy", name="sim_disk_proxy",
+            position=np.array(disk_pos, dtype=float),
+            scale=np.array([disk_side, disk_side, disk_h]),
+            color=np.array([0.8, 0.1, 0.1]),
+            mass=float(cfg.get("disk_mass", 0.120)),
+            physics_material=contact_mat,
+        ))
+        self.world.scene.add(DynamicCuboid(
+            prim_path="/World/SimRingProxy", name="sim_ring_proxy",
+            position=np.array(ring_pos, dtype=float),
+            scale=np.array([ring_side, ring_side, ring_h]),
+            color=np.array([0.1, 0.8, 0.1]),
+            mass=ring_mass_val,
+            physics_material=contact_mat,
+        ))
+
+        if has_model:
+            UsdGeom.Imageable(stage.GetPrimAtPath("/World/SimDiskProxy")).MakeInvisible()
+            UsdGeom.Imageable(stage.GetPrimAtPath("/World/SimRingProxy")).MakeInvisible()
+
+        # ---- revolute joint ----
+        axle = UsdPhysics.RevoluteJoint.Define(stage, "/World/SimDiskAxle")
+        axle.CreateAxisAttr("Z")
+        axle.CreateBody1Rel().SetTargets(["/World/SimDiskProxy"])
+        axle.CreateLocalPos0Attr(Gf.Vec3f(
+            float(disk_pos[0]), float(disk_pos[1]), float(disk_pos[2])))
+        axle.CreateLocalPos1Attr(Gf.Vec3f(0, 0, 0))
+
+        # ---- override inertia ----
+        disk_Iz = I_solid_disk(float(cfg.get("disk_mass", 0.120)), disk_r)
+        disk_Ixy = disk_Iz / 2
+        mass_api_d = UsdPhysics.MassAPI.Apply(stage.GetPrimAtPath("/World/SimDiskProxy"))
+        mass_api_d.CreateMassAttr(float(cfg.get("disk_mass", 0.120)))
+        mass_api_d.CreateDiagonalInertiaAttr(
+            Gf.Vec3f(float(disk_Ixy), float(disk_Ixy), float(disk_Iz)))
+
+        if drop_type == "ring":
             ring_Iz = I_ring(
-                cfg["ring_mass"], cfg["ring_r_inner"],
-                cfg["ring_r_outer"], cfg.get("ring_offset_x", 0.0),
-            )
-            ring_Ixy = ring_Iz / 2
-            ring_mass_api = UsdPhysics.MassAPI(ring_prim)
-            ring_mass_api.CreateDiagonalInertiaAttr(
-                Gf.Vec3f(float(ring_Ixy), float(ring_Ixy), float(ring_Iz))
+                float(cfg.get("ring_mass", 0.470)),
+                float(cfg.get("ring_r_inner", 0.054)),
+                float(cfg.get("ring_r_outer", 0.064)),
+                float(cfg.get("ring_offset_x", 0.0)),
             )
         else:
-            d2_r = float(cfg.get("disk2_radius", 0.125))
-            d2_h = float(cfg.get("disk2_height", 0.01))
-            d2_side = d2_r * 2
-            drop_z += d2_h / 2
+            ring_Iz = I_solid_disk(
+                float(cfg.get("disk2_mass", 0.120)),
+                float(cfg.get("disk2_radius", 0.125)))
+        ring_Ixy = ring_Iz / 2
+        mass_api_r = UsdPhysics.MassAPI.Apply(stage.GetPrimAtPath("/World/SimRingProxy"))
+        mass_api_r.CreateMassAttr(ring_mass_val)
+        mass_api_r.CreateDiagonalInertiaAttr(
+            Gf.Vec3f(float(ring_Ixy), float(ring_Ixy), float(ring_Iz)))
 
-            self.drop_body = self.world.scene.add(DynamicCuboid(
-                prim_path="/World/Disk2", name="disk2",
-                position=np.array([0.0, 0.0, drop_z]),
-                scale=np.array([d2_side, d2_side, d2_h]),
-                color=np.array([0.65, 0.55, 0.40]),
-                mass=float(cfg.get("disk2_mass", 0.120)),
-                physics_material=contact_mat,
+        # ---- wrappers ----
+        try:
+            from isaacsim.core.prims import RigidPrim, XFormPrim
+        except ImportError:
+            from omni.isaac.core.prims import RigidPrim, XFormPrim
+
+        self.disk = self.world.scene.add(
+            RigidPrim(prim_path="/World/SimDiskProxy", name="sim_disk_rigid"))
+        self.drop_body = self.world.scene.add(
+            RigidPrim(prim_path="/World/SimRingProxy", name="sim_ring_rigid"))
+
+        if has_model and disk_prim is not None:
+            self.visual_disk = self.world.scene.add(
+                XFormPrim(prim_path=str(disk_prim.GetPath()), name="visual_disk"))
+        if has_model and ring_prim is not None:
+            self.visual_ring = self.world.scene.add(
+                XFormPrim(prim_path=str(ring_prim.GetPath()), name="visual_ring"))
+
+        # ---- rotation markers (always visible) ----
+        marker_colors = [np.array([0.9, 0.1, 0.1]), np.array([0.1, 0.1, 0.9])]
+        marker_r = disk_r * 0.6
+        self._markers = []
+        self._marker_offsets = []
+        for i, mc in enumerate(marker_colors):
+            angle = i * np.pi
+            offset = np.array([marker_r * np.cos(angle), marker_r * np.sin(angle)])
+            self._marker_offsets.append(offset)
+            m = self.world.scene.add(VisualCuboid(
+                prim_path=f"/World/RotMarker{i}", name=f"rot_marker_{i}",
+                position=np.array([
+                    float(disk_pos[0]) + offset[0],
+                    float(disk_pos[1]) + offset[1],
+                    self._disk_center_z + disk_h / 2 + 0.002,
+                ]),
+                scale=np.array([0.02, 0.02, 0.004]),
+                color=mc,
             ))
+            self._markers.append(m)
 
-            d2_prim = stage.GetPrimAtPath("/World/Disk2")
-            d2_Iz = I_solid_disk(cfg["disk2_mass"], d2_r)
-            d2_Ixy = d2_Iz / 2
-            d2_mass_api = UsdPhysics.MassAPI(d2_prim)
-            d2_mass_api.CreateDiagonalInertiaAttr(
-                Gf.Vec3f(float(d2_Ixy), float(d2_Ixy), float(d2_Iz))
-            )
-
-        # ---- visual: axis marker at center ----
-        self.world.scene.add(VisualCuboid(
-            prim_path="/World/AxisMarker", name="axis_marker",
-            position=np.array([0.0, 0.0, self._disk_center_z + disk_h / 2 + 0.001]),
-            scale=np.array([0.004, 0.004, 0.002]),
-            color=np.array([1.0, 0.2, 0.2]),
-        ))
-
-        # ---- visual: colored corner marker on disk so rotation is visible ----
-        marker_offset = disk_r * 0.7
-        self.world.scene.add(VisualCuboid(
-            prim_path="/World/Disk/CornerMarkerA", name="disk_corner_a",
-            position=np.array([marker_offset, 0.0, self._disk_center_z + disk_h / 2 + 0.0005]),
-            scale=np.array([0.02, 0.02, 0.001]),
-            color=np.array([1.0, 0.85, 0.0]),
-        ))
-        self.world.scene.add(VisualCuboid(
-            prim_path="/World/Disk/CornerMarkerB", name="disk_corner_b",
-            position=np.array([-marker_offset, 0.0, self._disk_center_z + disk_h / 2 + 0.0005]),
-            scale=np.array([0.02, 0.02, 0.001]),
-            color=np.array([0.2, 0.9, 0.3]),
-        ))
-
-        # ---- camera: look at the disk from a diagonal angle ----
+        # ---- camera ----
         from core.scene import set_camera
-        cam_z = self._disk_center_z + 0.15
         set_camera(
-            eye=np.array([0.45, -0.45, cam_z + 0.20]),
+            eye=np.array([0.4, -0.4, self._disk_center_z + 0.3]),
             target=np.array([0.0, 0.0, self._disk_center_z]),
         )
+        log.info("Scene built successfully (model=%s)", has_model)
 
-    # --------------------------------------------------------- prepare run
+    # ======================================================= prim discovery
+    def _discover_visual_prims(self, stage):
+        from pxr import Usd
+
+        root = stage.GetPrimAtPath("/World/Apparatus")
+        if not root.IsValid():
+            raise RuntimeError("/World/Apparatus not found after loading USD")
+
+        all_prims = []
+        for prim in Usd.PrimRange(root):
+            name = prim.GetName()
+            ptype = prim.GetTypeName()
+            path = str(prim.GetPath())
+            all_prims.append((name, ptype, path))
+
+        log.info("Model hierarchy (%d prims):", len(all_prims))
+        for name, ptype, path in all_prims:
+            log.info("  %-25s type=%-12s %s", name, ptype, path)
+
+        disk_prim = None
+        ring_prim = None
+
+        for name, ptype, path in all_prims:
+            nl = name.lower()
+            if disk_prim is None and nl == "disk":
+                disk_prim = stage.GetPrimAtPath(path)
+            if ring_prim is None and nl in ("ring", "1_ring", "__ring"):
+                ring_prim = stage.GetPrimAtPath(path)
+
+        if disk_prim is None:
+            for name, _, path in all_prims:
+                if "disk" in name.lower():
+                    disk_prim = stage.GetPrimAtPath(path)
+                    break
+        if ring_prim is None:
+            for name, _, path in all_prims:
+                if "ring" in name.lower():
+                    ring_prim = stage.GetPrimAtPath(path)
+                    break
+
+        if disk_prim is None or ring_prim is None:
+            raise RuntimeError(
+                f"Could not find disk/ring in model hierarchy. "
+                f"disk={disk_prim}, ring={ring_prim}. "
+                f"See log output above for available prims."
+            )
+
+        log.info("Selected visual prims: disk=%s  ring=%s",
+                 disk_prim.GetPath(), ring_prim.GetPath())
+        return disk_prim, ring_prim
+
+    @staticmethod
+    def _strip_embedded_physics(stage, root_prim):
+        from pxr import Usd, UsdPhysics
+
+        disabled_joints = 0
+        disabled_rigid = 0
+        for prim in Usd.PrimRange(root_prim):
+            if prim.IsA(UsdPhysics.Joint):
+                prim.SetActive(False)
+                disabled_joints += 1
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                rb = UsdPhysics.RigidBodyAPI(prim)
+                rb.CreateRigidBodyEnabledAttr(False)
+                disabled_rigid += 1
+        log.info("Stripped embedded physics: joints=%d rigid_bodies=%d",
+                 disabled_joints, disabled_rigid)
+
+    @staticmethod
+    def _get_world_pose(stage, prim):
+        from pxr import UsdGeom, Usd
+
+        xf = UsdGeom.Xformable(prim)
+        tf = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        t = tf.ExtractTranslation()
+        return (
+            np.array([float(t[0]), float(t[1]), float(t[2])]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+        )
+
+    # ======================================================= visual sync
+    def _sync_visuals(self) -> None:
+        if self.disk is None:
+            return
+
+        dp, dq = self.disk.get_world_pose()
+        dp = np.array(dp, dtype=float)
+        dq = np.array(dq, dtype=float)
+
+        if self.visual_disk is not None:
+            try:
+                self.visual_disk.set_world_pose(dp, dq)
+            except Exception:
+                pass
+
+        angle = 2.0 * np.arctan2(float(dq[2]), float(dq[3]))
+        ca, sa = np.cos(angle), np.sin(angle)
+        for marker, offset in zip(self._markers, self._marker_offsets):
+            rx = ca * offset[0] - sa * offset[1]
+            ry = sa * offset[0] + ca * offset[1]
+            marker.set_world_pose(
+                np.array([dp[0] + rx, dp[1] + ry,
+                          dp[2] + self._disk_height / 2 + 0.002]),
+                dq,
+            )
+
+        if self.drop_body is not None and self.visual_ring is not None:
+            rp, rq = self.drop_body.get_world_pose()
+            try:
+                self.visual_ring.set_world_pose(
+                    np.array(rp, dtype=float), np.array(rq, dtype=float))
+            except Exception:
+                pass
+
+    # ======================================================= lifecycle
+    def warmup(self) -> None:
+        dt = self.cfg.get("physics_dt", 1.0 / 240.0)
+        warmup_s = self.cfg.get("warmup_seconds", 0.5)
+        steps = int(warmup_s / dt)
+        log.info("Warmup: %d steps (%.2f s) — ring held in place", steps, warmup_s)
+        for _ in range(steps):
+            self.world.step(render=True)
+            if self.drop_body is not None and self._ring_hold_pos is not None:
+                self.drop_body.set_world_pose(
+                    self._ring_hold_pos, self._ring_hold_rot)
+                self.drop_body.set_linear_velocity(np.zeros(3))
+                self.drop_body.set_angular_velocity(np.zeros(3))
+            self._sync_visuals()
+
+    def apply_initial_conditions(self) -> None:
+        omega = float(self.cfg.get("omega_init", 25.0))
+        self.disk.set_angular_velocity(np.array([0.0, 0.0, omega]))
+
+        if self._ring_hold_pos is not None:
+            self.drop_body.set_world_pose(self._ring_hold_pos, self._ring_hold_rot)
+        self.drop_body.set_linear_velocity(np.zeros(3))
+        self.drop_body.set_angular_velocity(np.zeros(3))
+        self._sync_visuals()
+
+        actual = self.disk.get_angular_velocity()
+        log.info("Initial conditions: disk omega_z=%.2f (requested %.2f), "
+                 "ring at z=%.4f",
+                 float(actual[2]), omega, float(self._ring_hold_pos[2]))
+
+    # ======================================================= prepare run
     def prepare_run(self) -> None:
         cfg = self.cfg
         drop_type = str(cfg.get("drop_object", "ring"))
 
         self._I_disk = I_solid_disk(cfg["disk_mass"], cfg["disk_radius"])
         self._I_pulley = I_solid_disk(
-            cfg.get("pulley_mass", 0.0), cfg.get("pulley_radius", 0.0),
-        )
+            cfg.get("pulley_mass", 0.0), cfg.get("pulley_radius", 0.0))
 
         if drop_type == "ring":
             self._I_drop = I_ring(
                 cfg["ring_mass"], cfg["ring_r_inner"],
-                cfg["ring_r_outer"], cfg.get("ring_offset_x", 0.0),
-            )
+                cfg["ring_r_outer"], cfg.get("ring_offset_x", 0.0))
         else:
             self._I_drop = I_solid_disk(cfg["disk2_mass"], cfg["disk2_radius"])
 
@@ -276,27 +456,10 @@ class Experiment(ExperimentBase):
         omega_f_theory = self._I_initial * cfg["omega_init"] / self._I_final
         cfg["omega_f_theory"] = omega_f_theory
 
-        log.info(
-            "I_disk=%.6f, I_drop=%.6f, I_initial=%.6f, I_final=%.6f, "
-            "omega_f_theory=%.3f rad/s",
-            self._I_disk, self._I_drop, self._I_initial, self._I_final,
-            omega_f_theory,
-        )
+        log.info("I_initial=%.6f, I_drop=%.6f, I_final=%.6f, omega_f_theory=%.3f",
+                 self._I_initial, self._I_drop, self._I_final, omega_f_theory)
 
-    # ------------------------------------------------ initial conditions
-    def apply_initial_conditions(self) -> None:
-        omega = float(self.cfg.get("omega_init", 25.0))
-        self.disk.set_angular_velocity(np.array([0.0, 0.0, omega]))
-
-        pos, rot = self.drop_body.get_world_pose()
-        self._ring_hold_pos = pos.copy()
-        self._ring_hold_rot = rot.copy()
-        self.drop_body.set_linear_velocity(np.zeros(3))
-        self.drop_body.set_angular_velocity(np.zeros(3))
-
-        log.info("Disk angular velocity set to %.2f rad/s", omega)
-
-    # --------------------------------------------------------- step loop
+    # ======================================================= step loop
     def step_callback(self, step: int, t: float) -> dict:
         pre_t = float(self.cfg.get("pre_collision_time", 2.0))
 
@@ -304,6 +467,8 @@ class Experiment(ExperimentBase):
             self.drop_body.set_world_pose(self._ring_hold_pos, self._ring_hold_rot)
             self.drop_body.set_linear_velocity(np.zeros(3))
             self.drop_body.set_angular_velocity(np.zeros(3))
+
+        self._sync_visuals()
 
         omega_disk = float(self.disk.get_angular_velocity()[2])
         omega_drop = float(self.drop_body.get_angular_velocity()[2])
@@ -333,10 +498,9 @@ class Experiment(ExperimentBase):
             "phase": phase,
         }
 
-    # ----------------------------------------------------------- analyze
+    # ======================================================= analyze
     def analyze(self, df: pd.DataFrame) -> dict:
         cfg = self.cfg
-        pre_t = float(cfg.get("pre_collision_time", 2.0))
         dt = float(cfg.get("physics_dt", 1 / 240))
         window = max(10, int(0.3 / dt))
 
@@ -346,41 +510,35 @@ class Experiment(ExperimentBase):
         pre_tail = pre_df.iloc[-window:] if len(pre_df) >= window else pre_df
         post_tail = post_df.iloc[-window:] if len(post_df) >= window else post_df
 
-        omega_i = float(pre_tail["omega_disk"].mean())
-        omega_f_disk = float(post_tail["omega_disk"].mean())
-        omega_f_drop = float(post_tail["omega_drop"].mean())
+        omega_i = float(pre_tail["omega_disk"].mean()) if len(pre_tail) > 0 else 0.0
+        omega_f_disk = float(post_tail["omega_disk"].mean()) if len(post_tail) > 0 else 0.0
+        omega_f_drop = float(post_tail["omega_drop"].mean()) if len(post_tail) > 0 else 0.0
 
         L_initial = self._I_initial * omega_i
         L_final = self._I_initial * omega_f_disk + self._I_drop * omega_f_drop
-        L_pct_diff = abs((L_final - L_initial) / L_initial * 100) if L_initial != 0 else 0.0
+        L_pct_diff = (abs((L_final - L_initial) / L_initial * 100)
+                      if L_initial != 0 else 0.0)
 
         KE_initial = 0.5 * self._I_initial * omega_i ** 2
         KE_final = (0.5 * self._I_initial * omega_f_disk ** 2
                      + 0.5 * self._I_drop * omega_f_drop ** 2)
-        KE_pct_loss = max(0.0, (KE_initial - KE_final) / KE_initial * 100) if KE_initial != 0 else 0.0
+        KE_pct_loss = (max(0.0, (KE_initial - KE_final) / KE_initial * 100)
+                       if KE_initial != 0 else 0.0)
 
         omega_f_theory = float(cfg.get("omega_f_theory", 0.0))
         omega_f_measured = (omega_f_disk + omega_f_drop) / 2
         omega_pct_err = (abs(omega_f_measured - omega_f_theory) / omega_f_theory * 100
                          if omega_f_theory != 0 else 0.0)
 
-        drop_type = str(cfg.get("drop_object", "ring"))
-
         contact_time = None
-        if len(post_df) > 0:
-            disk_h = float(cfg.get("disk_height", 0.01))
-            contact_z = self._disk_center_z + disk_h / 2
-            if drop_type == "ring":
-                contact_z += float(cfg.get("ring_height", 0.02)) / 2
-            else:
-                contact_z += float(cfg.get("disk2_height", 0.01)) / 2
-            contact_z += 0.005
+        if len(post_df) > 0 and self._ring_hold_pos is not None:
+            contact_z = self._ring_hold_pos[2] - 0.005
             landed = post_df[post_df["drop_z"] <= contact_z]
             if len(landed) > 0:
                 contact_time = float(landed.iloc[0]["time"])
 
         return {
-            "drop_object": drop_type,
+            "drop_object": str(cfg.get("drop_object", "ring")),
             "I_disk": self._I_disk,
             "I_pulley": self._I_pulley,
             "I_drop": self._I_drop,
@@ -401,7 +559,7 @@ class Experiment(ExperimentBase):
             "contact_time_s": contact_time,
         }
 
-    # ------------------------------------------------------------- plots
+    # ======================================================= plots
     def plot(self, df: pd.DataFrame) -> None:
         plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
         plt.rcParams["axes.unicode_minus"] = False
@@ -410,24 +568,24 @@ class Experiment(ExperimentBase):
         fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
 
         axs[0].plot(df["time"], df["omega_disk"], color="royalblue", lw=2, label="Disk")
-        axs[0].plot(df["time"], df["omega_drop"], color="firebrick", lw=2, label="Ring/Disk2")
-        axs[0].axvline(pre_t, color="gray", ls="--", lw=1, label="Ring released")
+        axs[0].plot(df["time"], df["omega_drop"], color="firebrick", lw=2, label="Ring")
+        axs[0].axvline(pre_t, color="gray", ls="--", lw=1, label="Released")
         axs[0].set_ylabel("Angular Velocity (rad/s)")
         axs[0].set_title("Angular Velocity vs Time")
         axs[0].legend()
         axs[0].grid(True, alpha=0.3)
 
         axs[1].plot(df["time"], df["L_disk"], color="royalblue", lw=1.5, label="L disk")
-        axs[1].plot(df["time"], df["L_drop"], color="firebrick", lw=1.5, label="L ring/disk2")
+        axs[1].plot(df["time"], df["L_drop"], color="firebrick", lw=1.5, label="L ring")
         axs[1].plot(df["time"], df["L_total"], color="green", lw=2.5, label="L total")
         axs[1].axvline(pre_t, color="gray", ls="--", lw=1)
-        axs[1].set_ylabel("Angular Momentum (kg·m²/s)")
+        axs[1].set_ylabel(u"Angular Momentum (kg\u00b7m\u00b2/s)")
         axs[1].set_title("Angular Momentum vs Time")
         axs[1].legend()
         axs[1].grid(True, alpha=0.3)
 
         axs[2].plot(df["time"], df["KE_disk"], color="royalblue", lw=1.5, label="KE disk")
-        axs[2].plot(df["time"], df["KE_drop"], color="firebrick", lw=1.5, label="KE ring/disk2")
+        axs[2].plot(df["time"], df["KE_drop"], color="firebrick", lw=1.5, label="KE ring")
         axs[2].plot(df["time"], df["KE_total"], color="orange", lw=2.5, label="KE total")
         axs[2].axvline(pre_t, color="gray", ls="--", lw=1)
         axs[2].set_xlabel("Time (s)")
@@ -444,7 +602,7 @@ class Experiment(ExperimentBase):
         ax2.plot(df["time"], df["drop_z"], color="firebrick", lw=2)
         ax2.axvline(pre_t, color="gray", ls="--", lw=1, label="Released")
         ax2.set_xlabel("Time (s)")
-        ax2.set_ylabel("Ring/Disk2 Z Position (m)")
+        ax2.set_ylabel("Ring Z Position (m)")
         ax2.set_title("Drop Object Height vs Time")
         ax2.legend()
         ax2.grid(True, alpha=0.3)
@@ -454,7 +612,7 @@ class Experiment(ExperimentBase):
 
         log.info("Plots saved to %s", self.out_dir)
 
-    # ----------------------------------------------------------- report
+    # ======================================================= report
     def generate_report(self, summary: dict, df: pd.DataFrame) -> str | None:
         try:
             rg = ReportGenerator()
@@ -473,32 +631,32 @@ class Experiment(ExperimentBase):
             log.warning("Report generation skipped (template or jinja2 missing).")
             return None
 
-    # ----------------------------------------------------------- display
+    # ======================================================= display
     def print_summary(self, summary: dict) -> None:
         s = summary
-        print("\n========== Experiment 1: Conservation of Angular Momentum ==========")
+        print("\n========== Experiment 1: Angular Momentum Conservation ==========")
         print(f"  Drop object:            {s['drop_object']}")
-        print(f"  I_disk + I_pulley:      {s['I_initial']:.6f} kg·m²")
-        print(f"  I_drop:                 {s['I_drop']:.6f} kg·m²")
-        print(f"  I_final:                {s['I_final']:.6f} kg·m²")
+        print(f"  I_disk + I_pulley:      {s['I_initial']:.6f} kg*m^2")
+        print(f"  I_drop:                 {s['I_drop']:.6f} kg*m^2")
+        print(f"  I_final:                {s['I_final']:.6f} kg*m^2")
         print(f"  omega_initial:          {s['omega_i']:.2f} rad/s")
         print(f"  omega_final (measured): {s['omega_f_measured']:.2f} rad/s")
         print(f"  omega_final (theory):   {s['omega_f_theory']:.2f} rad/s")
         print(f"  omega error:            {s['omega_pct_err']:.2f} %")
         if s["contact_time_s"] is not None:
             print(f"  Contact time:           {s['contact_time_s']:.3f} s")
-        print(f"  L_initial:              {s['L_initial']:.6f} kg·m²/s")
-        print(f"  L_final:                {s['L_final']:.6f} kg·m²/s")
+        print(f"  L_initial:              {s['L_initial']:.6f} kg*m^2/s")
+        print(f"  L_final:                {s['L_final']:.6f} kg*m^2/s")
         print(f"  L % difference:         {s['L_pct_diff']:.3f} %")
         print(f"  KE_initial:             {s['KE_initial']:.6f} J")
         print(f"  KE_final:               {s['KE_final']:.6f} J")
         print(f"  KE loss:                {s['KE_pct_loss']:.2f} %")
-        collision_type = "inelastic" if s["KE_pct_loss"] > 1.0 else "near-elastic"
-        print(f"  Collision type:         {collision_type}")
+        ctype = "inelastic" if s["KE_pct_loss"] > 1.0 else "near-elastic"
+        print(f"  Collision type:         {ctype}")
         print(f"  Output:                 {self.out_dir}")
-        print("=====================================================================\n")
+        print("=================================================================\n")
 
-    # ---------------------------------------------------------- cleanup
+    # ======================================================= cleanup
     def shutdown(self) -> None:
         global _app
         if _app is not None:
