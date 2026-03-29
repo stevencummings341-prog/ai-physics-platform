@@ -98,6 +98,16 @@ async def _cleanup():
 async def _start():
     await _cleanup()
 
+    # Force-reload our modules so re-running in Script Editor always
+    # picks up the latest code from disk.
+    import importlib
+    for mod_name in list(sys.modules):
+        if mod_name.startswith(("configs", "core.webrtc_server")):
+            try:
+                del sys.modules[mod_name]
+            except KeyError:
+                pass
+
     from configs.server import HTTP_HOST, HTTP_PORT, WS_PORT, HOST_IP
     from core.webrtc_server import WebRTCServer
 

@@ -487,6 +487,22 @@ class WebRTCServer:
             await asyncio.sleep(0.1)
             tl.stop()
 
+        elif mtype == "load_usd":
+            exp_id = str(data.get("experiment_id", "1")).strip()
+            usd_path = data.get("usd_path")
+            if not usd_path:
+                exp_stage = {
+                    "1": os.path.join(_PROJECT_ROOT, "Experiment", "exp1", "exp1.usd"),
+                    "2": os.path.join(_PROJECT_ROOT, "Experiment", "exp2", "exp2.usd"),
+                }
+                usd_path = exp_stage.get(exp_id, DEFAULT_USD_PATH)
+            carb.log_warn(f"Loading USD: {usd_path}")
+            ok = omni.usd.get_context().open_stage(usd_path)
+            if ok:
+                self.simulation_control_enabled = False
+                tl.stop()
+            await ws.send_json({"type": "usd_loaded", "success": ok, "path": usd_path})
+
         elif mtype == "enter_experiment":
             exp_id = data.get("experiment_id", "1")
             self.current_experiment = exp_id
