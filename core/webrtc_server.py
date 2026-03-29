@@ -64,6 +64,9 @@ try:
 except ImportError:
     HAS_WEBRTC = False
     carb.log_error("WebRTC unavailable — pip install aiortc aiohttp av")
+    # Keep module importable so the error can be surfaced cleanly later.
+    class VideoStreamTrack:  # type: ignore[override]
+        pass
 
 try:
     import omni.replicator.core as rep
