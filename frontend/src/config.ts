@@ -1,17 +1,24 @@
 /**
  * Runtime configuration for the frontend.
  *
- * In development (`npm run dev`) values come from .env or defaults here.
- * In production the Vite build bakes import.meta.env.VITE_* at compile time,
- * or the values fall back to window.location.hostname so the page works
- * when served from the same machine as the Isaac Sim server.
+ * All traffic is proxied through the Vite dev server on the same origin,
+ * so only port 5173 needs to be reachable from the browser. Vite forwards:
+ *   /offer, /camera, /load_usd → http://127.0.0.1:8080 (WebRTC HTTP)
+ *   /ws                        → ws://127.0.0.1:30000  (WebSocket)
  */
 
-const fallbackHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
+const origin = typeof window !== "undefined"
+  ? `${window.location.protocol}//${window.location.host}`
+  : "";
+
+const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws";
+const wsOrigin = typeof window !== "undefined"
+  ? `${wsProtocol}://${window.location.host}`
+  : "";
 
 export const SERVER_CONFIG = {
-  /** WebRTC signaling + camera HTTP API */
-  httpUrl: import.meta.env.VITE_HTTP_URL ?? `http://${fallbackHost}:8080`,
-  /** WebSocket control + telemetry */
-  wsUrl: import.meta.env.VITE_WS_URL ?? `ws://${fallbackHost}:30000`,
+  /** WebRTC signaling + camera HTTP API (proxied through Vite) */
+  httpUrl: import.meta.env.VITE_HTTP_URL ?? origin,
+  /** WebSocket control + telemetry (proxied through Vite at /ws) */
+  wsUrl: import.meta.env.VITE_WS_URL ?? `${wsOrigin}/ws`,
 } as const;
