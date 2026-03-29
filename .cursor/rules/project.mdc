@@ -7,27 +7,31 @@ alwaysApply: true
 
 ## Identity
 
-This is a GPU-accelerated physics experiment simulation platform running on a university Linux server (NVIDIA RTX 5090). It uses NVIDIA Isaac Sim (isaacsim Python API + PhysX 5) to replicate real-world physics experiments, collects quantitative data, generates publication-ready reports, and will stream to VR headsets for immersive observation.
+This is a full-stack GPU-accelerated physics experiment platform running on a university Linux server (NVIDIA RTX 5090). It uses NVIDIA Isaac Sim (isaacsim Python API + PhysX 5) to replicate real-world physics experiments, with a React web frontend for interactive control and WebRTC video streaming to browsers.
 
 ## Architecture
 
 ```
+frontend/                # React 19 + TypeScript + Vite + Tailwind web UI
+  src/experiments.ts     # 8 experiment UI definitions (controls, charts)
+  src/config.ts          # Server URL config (auto-detects hostname)
+  src/services/          # WebSocket client
+  src/components/        # Landing, LevelSelect, ExperimentView, WebRTCViewer
 core/                    # Shared framework — never experiment-specific
-  experiment_base.py     # ExperimentBase ABC: configure → build → warmup → run → analyze → report
-  scene.py               # Reusable scene primitives: tracks, floors, lighting, grids
-  recorder.py            # DataRecorder: per-step sampling, CSV/Parquet export
-  reporter.py            # ReportGenerator: Jinja2 templates → Markdown → PDF
-  vr.py                  # VR streaming bridge (Omniverse LiveStream / CloudXR)
-experiments/             # One sub-package per experiment (expt1_free_fall/, expt7_momentum/, …)
-  <exptN>/
-    config.yaml          # All tuneable parameters — NEVER hard-code physics values in .py
-    sim.py               # ExperimentBase subclass: build_scene(), step_callback()
-    analysis.py          # Post-sim analysis, plotting, derived quantities
-configs/                 # Server-level and shared configs
-report_templates/        # Jinja2 .md.j2 templates for experiment reports
-outputs/                 # Auto-created timestamped run dirs (gitignored)
-run.py                   # CLI entry: `python run.py expt7_momentum [--headless] [--vr]`
+  webrtc_server.py       # WebRTC + WebSocket server (runs inside Isaac Sim)
+  experiment_base.py     # ExperimentBase ABC for batch mode
+  scene.py, recorder.py  # Scene primitives, data recording
+  reporter.py            # Jinja2 → Markdown → PDF reports
+configs/server.py        # All server config (ports, paths) — env-var overridable
+camera/                  # Per-experiment camera preset scripts (usd1–8.py)
+experiments/             # Batch experiment subpackages (exptN_name/)
+Experiment/              # USD scene assets (exp1/–exp8/ + unified exp.usd)
+start_server.py          # Isaac Sim Script Editor entry point
+launch.sh                # One-click frontend launcher
+run.py                   # CLI batch entry: python run.py expt7_momentum
 ```
+
+### Ports: Frontend :5173 | WebRTC :8080 | WebSocket :30000
 
 ## Experiment Lifecycle (every experiment follows this)
 

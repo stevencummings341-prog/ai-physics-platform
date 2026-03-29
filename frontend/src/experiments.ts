@@ -51,12 +51,12 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-03-ballistic-pendulum',
     title: 'Conservation of Energy (Ballistic Pendulum)',
-    description: 'Measure projectile velocity through energy conservation in ballistic pendulum.',
+    description: 'Measure projectile velocity through energy conservation in ballistic pendulum. (Coming Soon)',
     thumbnail: 'https://picsum.photos/seed/ballistic/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '3',
     difficulty: 'Medium',
-    isLocked: false,
+    isLocked: true,
     controls: [
       { id: 'projectile_mass', label: 'Projectile Mass (kg)', type: 'slider', min: 0.01, max: 0.5, step: 0.01, defaultValue: 0.05, command: 'set_projectile_mass' },
       { id: 'pendulum_mass', label: 'Pendulum Mass (kg)', type: 'slider', min: 0.5, max: 5, step: 0.1, defaultValue: 2.0, command: 'set_pendulum_mass' },
@@ -71,12 +71,12 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-04-driven-damped-oscillation',
     title: 'Driven Damped Harmonic Oscillations',
-    description: 'Study resonance and phase relationships in driven damped oscillators.',
+    description: 'Study resonance and phase relationships in driven damped oscillators. (Coming Soon)',
     thumbnail: 'https://picsum.photos/seed/oscillation/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '4',
     difficulty: 'Medium',
-    isLocked: false,
+    isLocked: true,
     controls: [
       { id: 'damping', label: 'Damping Coefficient', type: 'slider', min: 0, max: 2, step: 0.1, defaultValue: 0.5, command: 'set_damping' },
       { id: 'drive_frequency', label: 'Drive Frequency (Hz)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_frequency' },
@@ -91,12 +91,12 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-05-rotational-inertia',
     title: 'Rotational Inertia (Physical Pendulum)',
-    description: 'Determine rotational inertia through physical pendulum period measurements.',
+    description: 'Determine rotational inertia through physical pendulum period measurements. (Coming Soon)',
     thumbnail: 'https://picsum.photos/seed/inertia/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '5',
     difficulty: 'Medium',
-    isLocked: false,
+    isLocked: true,
     controls: [
       { id: 'pivot_position', label: 'Pivot Position (cm)', type: 'slider', min: 5, max: 50, step: 1, defaultValue: 25, command: 'set_pivot' },
       { id: 'angle', label: 'Initial Angle (°)', type: 'slider', min: 5, max: 30, step: 1, defaultValue: 10, command: 'set_angle' },
@@ -111,12 +111,12 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-06-centripetal-force',
     title: 'Centripetal Force',
-    description: 'Investigate the relationship between centripetal force, mass, and circular motion.',
+    description: 'Investigate the relationship between centripetal force, mass, and circular motion. (Coming Soon)',
     thumbnail: 'https://picsum.photos/seed/centripetal/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '6',
     difficulty: 'Easy',
-    isLocked: false,
+    isLocked: true,
     controls: [
       { id: 'mass', label: 'Mass (kg)', type: 'slider', min: 0.1, max: 2, step: 0.1, defaultValue: 0.5, command: 'set_mass' },
       { id: 'radius', label: 'Radius (m)', type: 'slider', min: 0.1, max: 1, step: 0.05, defaultValue: 0.3, command: 'set_radius' },
@@ -154,12 +154,12 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-08-resonance-air-column',
     title: 'Resonance in Air Column',
-    description: 'Study standing waves and resonance frequencies in air columns.',
+    description: 'Study standing waves and resonance frequencies in air columns. (Coming Soon)',
     thumbnail: 'https://picsum.photos/seed/resonance/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '8',
     difficulty: 'Medium',
-    isLocked: false,
+    isLocked: true,
     controls: [
       { id: 'length', label: 'Column Length (cm)', type: 'slider', min: 10, max: 100, step: 1, defaultValue: 50, command: 'set_length' },
       { id: 'frequency', label: 'Frequency (Hz)', type: 'slider', min: 100, max: 2000, step: 50, defaultValue: 512, command: 'set_frequency' },

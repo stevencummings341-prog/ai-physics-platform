@@ -1,39 +1,96 @@
 {
-  "last_updated": "2026-03-28",
+  "last_updated": "2026-03-29",
   "project_name": "AI Physics Experiment Platform",
-  "project_goal": "Build reproducible Isaac Sim physics experiments with reports, durable agent continuity, and future VR integration.",
+  "project_goal": "Full-stack physics experiment platform: Isaac Sim backend + React web frontend with WebRTC streaming, real-time telemetry, and interactive control.",
+  "architecture": {
+    "frontend": "React 19 + TypeScript + Vite + Tailwind (frontend/)",
+    "backend": "core/webrtc_server.py running inside Isaac Sim",
+    "communication": "WebSocket :30000 (control/telemetry) + WebRTC :8080 (video)",
+    "launch": "./launch.sh (frontend) + start_server.py (Isaac Sim Script Editor)",
+    "config": "configs/server.py with env-var overrides"
+  },
   "mandatory_read_order": [
     "docs/START_HERE.md",
     "docs/PROJECT_STATE.md",
     "state/active_context.json",
     "docs/ROADMAP.md",
     "docs/handoff/LATEST.md",
-    "docs/adr/ADR-0001-context-truth.md",
-    "docs/adr/ADR-0002-versioned-instructions.md",
-    "docs/adr/ADR-0003-single-entry-startup.md",
-    "docs/experiments/EXPERIMENT_INDEX.md",
     "AGENTS.md",
-    ".cursor/rules/project.mdc",
-    ".cursor/rules/context-handoff.mdc",
-    ".cursor/rules/isaac-sim.mdc"
+    ".cursor/rules/project.mdc"
   ],
   "current_focus": [
-    "Preserve project continuity across new agents",
-    "Keep instructions and architecture under git version control",
-    "Continue hardening expt1_angular_momentum and expt7_momentum"
+    "Implement remaining experiments (3-6, 8) — USD physics setup + server telemetry wiring",
+    "Keep frontend locked cards for unimplemented experiments",
+    "Preserve project continuity across agent sessions"
   ],
   "experiments": {
     "expt1_angular_momentum": {
-      "status": "in_progress",
-      "purpose": "Angular momentum conservation with teammate-authored model integration",
-      "key_pattern": "visual USD plus hidden proxy physics bodies"
+      "status": "implemented",
+      "web_ui": true,
+      "server_telemetry": "full",
+      "batch_mode": true,
+      "notes": "Uses teammate USD model + DynamicCuboid proxies"
+    },
+    "expt2_large_pendulum": {
+      "status": "implemented",
+      "web_ui": true,
+      "server_telemetry": "full",
+      "batch_mode": false,
+      "notes": "Fully functional via senior's WebRTC server code"
+    },
+    "expt3_ballistic_pendulum": {
+      "status": "stub",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": false,
+      "notes": "USD asset exists, server handler is placeholder, frontend locked"
+    },
+    "expt4_driven_damped": {
+      "status": "stub",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": false
+    },
+    "expt5_rotational_inertia": {
+      "status": "stub",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": false
+    },
+    "expt6_centripetal_force": {
+      "status": "stub",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": false
     },
     "expt7_momentum": {
-      "status": "in_progress",
-      "purpose": "Linear momentum conservation experiment",
-      "key_pattern": "standardized experiment class plus user-friendly launcher"
+      "status": "implemented",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": true,
+      "notes": "Batch sim.py exists; web server handler is stub — needs USD prim path wiring"
+    },
+    "expt8_resonance": {
+      "status": "stub",
+      "web_ui": true,
+      "server_telemetry": "stub",
+      "batch_mode": false
     }
   },
+  "ports": {
+    "frontend": 5173,
+    "webrtc_http": 8080,
+    "websocket": 30000
+  },
+  "how_to_add_experiment": [
+    "1. Build USD physics in Experiment/expN/ (rigid bodies, joints, materials)",
+    "2. In core/webrtc_server.py: add state vars, _handle_ws_message cases, telemetry in _telemetry_loop",
+    "3. In core/webrtc_server.py: update _switch_camera presets if needed",
+    "4. In core/webrtc_server.py: add _read_* helpers for telemetry readback",
+    "5. In frontend/src/experiments.ts: set isLocked: false, adjust controls/chartConfig",
+    "6. (Optional) Add experiments/exptN_name/ for batch analysis with ExperimentBase",
+    "7. Update this file and docs/PROJECT_STATE.md"
+  ],
   "operating_rules": [
     "Do not depend on prior chat as the only project memory",
     "Record architecture or workflow decisions as ADRs",
@@ -42,12 +99,7 @@
     "Keep rule files and AGENTS.md versioned in git"
   ],
   "open_risks": [
-    "Continuity will decay if future sessions stop updating handoff and state files",
-    "Experiment runtime behavior still needs ongoing live Isaac Sim verification"
-  ],
-  "next_actions": [
-    "Use docs/START_HERE.md as the first file for future sessions",
-    "Add new experiment notes to docs/experiments before major implementation",
-    "Commit instruction and state changes together with related code changes"
+    "exp3-6, exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
+    "Experiment runtime behavior needs live Isaac Sim verification"
   ]
 }
