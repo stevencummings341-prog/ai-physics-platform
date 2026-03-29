@@ -101,5 +101,19 @@
   "open_risks": [
     "exp3-6, exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
     "Experiment runtime behavior needs live Isaac Sim verification"
-  ]
+  ],
+  "continuity_snapshot": {
+    "updated": "2026-03-29",
+    "human_purpose": "Run physics experiments from the browser; primary focus exp1 angular momentum + stable cloud/Isaac workflow.",
+    "project_root": "/125090599",
+    "github": "stevencummings341-prog/ai-physics-platform",
+    "commands": {
+      "frontend": "cd /125090599 && ./launch.sh",
+      "isaac_script_editor": "exec(open(\"/125090599/start_server.py\").read())"
+    },
+    "ports": { "frontend": 5173, "webrtc_http": 8080, "websocket": 30000 },
+    "browser_remote_server": "Use http://<public-ip>:5173 or ssh -L 5173:127.0.0.1:5173; open firewall for 5173/8080/30000 if needed.",
+    "isaac_note": "Isaac Sim opens as the desktop Kit app; start_server.py runs inside Script Editor, not plain conda python on SSH.",
+    "anchor_doc": "docs/handoff/2026-03-29-session-context-anchor.md"
+  }
 }

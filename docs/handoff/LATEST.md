@@ -2,9 +2,10 @@
 
 ## Current Pointer
 
-The latest relevant continuity note is:
+The latest relevant continuity notes (read both):
 
-- `docs/handoff/2026-03-29-fullstack-integration.md`
+1. **`docs/handoff/2026-03-29-session-context-anchor.md`** — **short “what we’re doing now”** (paths, ports, browser/Isaac workflow, user situation). Use this after context resets.
+2. `docs/handoff/2026-03-29-fullstack-integration.md` — full-stack integration narrative.
 
 Previous notes:
 
