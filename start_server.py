@@ -11,7 +11,48 @@ import sys
 import os
 import asyncio
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+def _is_project_root(path: str) -> bool:
+    return (
+        os.path.isdir(path)
+        and os.path.exists(os.path.join(path, "configs", "server.py"))
+        and os.path.exists(os.path.join(path, "core", "webrtc_server.py"))
+    )
+
+
+def _detect_project_root() -> str:
+    candidates = []
+
+    env_root = os.environ.get("AI_PHYSICS_PROJECT_ROOT")
+    if env_root:
+        candidates.append(env_root)
+
+    try:
+        candidates.append(os.getcwd())
+    except Exception:
+        pass
+
+    if "__file__" in globals():
+        try:
+            file_dir = os.path.dirname(os.path.abspath(__file__))
+            candidates.append(file_dir)
+            candidates.append(os.path.dirname(file_dir))
+        except Exception:
+            pass
+
+    # Workspace default for this deployment
+    candidates.append("/125090599")
+
+    for candidate in candidates:
+        if _is_project_root(candidate):
+            return candidate
+
+    raise RuntimeError(
+        "Could not detect project root. Set AI_PHYSICS_PROJECT_ROOT or run from the repo root."
+    )
+
+
+PROJECT_ROOT = _detect_project_root()
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 

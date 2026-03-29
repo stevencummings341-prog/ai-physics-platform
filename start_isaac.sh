@@ -78,8 +78,8 @@ echo -e "${GREEN}Starting Isaac Sim from:${NC} $ISAACSIM_BIN"
 echo -e "${GREEN}Using display:${NC} ${DISPLAY:-$WAYLAND_DISPLAY}"
 echo -e "${GREEN}Auto-running:${NC} $PROJECT_ROOT/start_server.py"
 
-OMNI_KIT_ALLOW_ROOT=1 nohup "$ISAACSIM_BIN" --allow-root \
-    --exec "exec(open(r'$PROJECT_ROOT/start_server.py').read())" \
+AI_PHYSICS_PROJECT_ROOT="$PROJECT_ROOT" OMNI_KIT_ALLOW_ROOT=1 nohup "$ISAACSIM_BIN" --allow-root \
+    --exec "$PROJECT_ROOT/start_server.py" \
     >"$LOG_FILE" 2>&1 &
 
 ISAAC_PID=$!
