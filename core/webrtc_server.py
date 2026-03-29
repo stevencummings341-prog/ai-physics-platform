@@ -422,12 +422,26 @@ class WebRTCServer:
 
     async def load_usd(self, request):
         p = await request.json()
-        usd_path = p.get("usd_path", DEFAULT_USD_PATH)
+        experiment_id = str(p.get("experiment_id", "")).strip()
+        usd_path = p.get("usd_path")
+        if not usd_path:
+            # Prefer experiment-specific USD files when available. The unified
+            # exp.usd currently contains broken references for several authored
+            # assets, so exp1/exp2 should load their dedicated stage files.
+            project_root = _PROJECT_ROOT
+            experiment_stage_paths = {
+                "1": os.path.join(project_root, "Experiment", "exp1", "exp1.usd"),
+                "2": os.path.join(project_root, "Experiment", "exp2", "exp2.usd"),
+            }
+            usd_path = experiment_stage_paths.get(experiment_id, DEFAULT_USD_PATH)
         ok = omni.usd.get_context().open_stage(usd_path)
         if ok:
             self.simulation_control_enabled = False
             omni.timeline.get_timeline_interface().stop()
-            await self._apply_exp1_params()
+            if experiment_id == "2":
+                await self._apply_exp2_params()
+            else:
+                await self._apply_exp1_params()
             return web.Response(text=json.dumps({"status": "ok"}))
         return web.Response(status=500, text="Failed to load USD")
 
@@ -607,10 +621,25 @@ class WebRTCServer:
                 return
             camera = UsdGeom.Camera(prim)
             xform = UsdGeom.Xformable(prim)
+            ops = xform.GetOrderedXformOps()
 
-            xform.ClearXformOpOrder()
-            translate_op = xform.AddTranslateOp()
-            orient_op = xform.AddOrientOp()
+            translate_op = next(
+                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
+                None,
+            )
+            orient_op = next(
+                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeOrient),
+                None,
+            )
+            rotate_xyz_op = next(
+                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ),
+                None,
+            )
+
+            if translate_op is None:
+                translate_op = xform.AddTranslateOp()
+            if orient_op is None and rotate_xyz_op is None:
+                orient_op = xform.AddOrientOp()
 
             presets = {
                 "1": (Gf.Vec3d(3.458, 4.154, 2.507), Gf.Quatd(0.808, 0.229, 0.148, 0.522)),
@@ -625,7 +654,8 @@ class WebRTCServer:
             if experiment_id in presets:
                 pos, quat = presets[experiment_id]
                 translate_op.Set(pos)
-                orient_op.Set(quat)
+                if orient_op is not None:
+                    orient_op.Set(quat)
             camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
             camera.GetFocalLengthAttr().Set(18.147)
         except Exception as exc:

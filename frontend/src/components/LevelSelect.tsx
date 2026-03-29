@@ -37,9 +37,9 @@ const LevelSelect: React.FC<LevelSelectProps> = ({ onSelectLevel, onBack }) => {
       const alreadyConnected = isaacService.isConnected();
       
       if (alreadyConnected) {
-        console.log('✅ Already connected, switching to exp2 camera...');
-        // 已连接时（从实验返回），只切换相机到 exp2
-        await isaacService.switchCamera('2');
+        console.log('✅ Already connected, switching to exp1 camera...');
+        // 已连接时（从实验返回），切回当前稳定可用的 exp1 视角
+        await isaacService.switchCamera('1');
         return;
       }
 
@@ -51,16 +51,16 @@ const LevelSelect: React.FC<LevelSelectProps> = ({ onSelectLevel, onBack }) => {
         if (connected) {
           console.log('✅ WebSocket connected');
 
-          // 2. 加载exp.usd（统一的场景文件，默认加载实验1）
+          // 2. 加载实验1的独立场景（当前最稳定可用）
           console.log(' Loading USD scene...');
           const loaded = await isaacService.loadUSDScene('1');
 
           if (loaded) {
             console.log('✅ USD scene loaded');
             
-            // 3. 切换到 exp2 的相机视角（Level Select 界面默认视角）
-            console.log(' Switching to exp2 camera for level select view...');
-            await isaacService.switchCamera('2');
+            // 3. 切换到 exp1 的相机视角
+            console.log(' Switching to exp1 camera for level select view...');
+            await isaacService.switchCamera('1');
             console.log('✅ Camera switched, ready for experiment selection');
           } else {
             console.warn('⚠️ Failed to load USD scene');
