@@ -9,6 +9,11 @@ dist/
 build/
 .DS_Store
 *.log
-# Local snapshot archives (use git-tracked sources instead)
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Local snapshot / bundle archives
 *_snapshot.tar.gz
 ai_physics_platform_bundle.tar.gz
