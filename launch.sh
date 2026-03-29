@@ -3,8 +3,10 @@
 # AI Physics Experiment Platform — One-Click Launcher
 #
 # Usage:
-#   ./launch.sh              Start frontend + print Isaac Sim instructions
-#   ./launch.sh --stop       Stop everything
+#   ./launch.sh              Start frontend only
+#   ./launch.sh --all        Start frontend + Isaac Sim (from VNC session)
+#   ./launch.sh --isaac-only Start Isaac Sim only
+#   ./launch.sh --stop       Stop frontend + Isaac Sim
 #   ./launch.sh --status     Show running services
 # ============================================================
 set -e
@@ -12,6 +14,7 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 PID_FILE="$PROJECT_ROOT/.frontend.pid"
+ISAAC_PID_FILE="$PROJECT_ROOT/.isaacsim.pid"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -37,6 +40,10 @@ stop_frontend() {
     fi
 }
 
+stop_isaac() {
+    "$PROJECT_ROOT/start_isaac.sh" --stop >/dev/null 2>&1 || true
+}
+
 show_status() {
     echo -e "${BOLD}=== Service Status ===${NC}"
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
@@ -44,21 +51,37 @@ show_status() {
     else
         echo -e "  Frontend: ${RED}STOPPED${NC}"
     fi
-    if ss -tlnp 2>/dev/null | grep -q ":8080"; then
-        echo -e "  WebRTC  : ${GREEN}RUNNING${NC} (port 8080)"
+    if [ -f "$ISAAC_PID_FILE" ] && kill -0 "$(cat "$ISAAC_PID_FILE")" 2>/dev/null; then
+        echo -e "  Isaac Sim: ${GREEN}RUNNING${NC} (PID $(cat "$ISAAC_PID_FILE"))"
     else
-        echo -e "  WebRTC  : ${RED}STOPPED${NC} — start Isaac Sim and run start_server.py"
+        echo -e "  Isaac Sim: ${RED}STOPPED${NC}"
     fi
-    if ss -tlnp 2>/dev/null | grep -q ":30000"; then
-        echo -e "  WebSocket: ${GREEN}RUNNING${NC} (port 30000)"
-    else
-        echo -e "  WebSocket: ${RED}STOPPED${NC}"
-    fi
+    python3 - <<'PY'
+import socket
+for label, port in [("WebRTC", 8080), ("WebSocket", 30000)]:
+    s = socket.socket()
+    s.settimeout(0.3)
+    try:
+        s.connect(("127.0.0.1", port))
+        print(f"  {label:<9}: \033[0;32mRUNNING\033[0m (port {port})")
+    except Exception:
+        print(f"  {label:<9}: \033[0;31mSTOPPED\033[0m (port {port})")
+    finally:
+        s.close()
+PY
 }
 
 case "${1:-}" in
+    --all)
+        START_ISAAC=1
+        ;;
+    --isaac-only)
+        "$PROJECT_ROOT/start_isaac.sh"
+        exit 0
+        ;;
     --stop)
         stop_frontend
+        stop_isaac
         exit 0
         ;;
     --status)
@@ -104,20 +127,30 @@ echo ""
 echo -e "${BOLD}${GREEN}✓ Frontend running${NC}"
 echo -e "  URL: ${CYAN}http://${IP}:5173${NC}"
 echo ""
-echo -e "${BOLD}${YELLOW}⚠  Isaac Sim backend — you need to do ONE more thing:${NC}"
-echo ""
-echo -e "  Open Isaac Sim → Window → Script Editor → paste and run:"
-echo ""
-echo -e "    ${CYAN}exec(open('${PROJECT_ROOT}/start_server.py').read())${NC}"
-echo ""
-echo -e "  Or if using headless Isaac Sim:"
-echo ""
-echo -e "    ${CYAN}~/.local/share/ov/pkg/isaac-sim-*/python.sh ${PROJECT_ROOT}/start_server.py${NC}"
-echo ""
+
+if [ "${START_ISAAC:-0}" = "1" ]; then
+    echo -e "${GREEN}Starting Isaac Sim as requested (--all)...${NC}"
+    "$PROJECT_ROOT/start_isaac.sh"
+    echo ""
+else
+    echo -e "${BOLD}${YELLOW}⚠  Isaac Sim backend — you need to do ONE more thing:${NC}"
+    echo ""
+    echo -e "  If you are inside a VNC desktop terminal, you can now run:"
+    echo ""
+    echo -e "    ${CYAN}./start_isaac.sh${NC}"
+    echo ""
+    echo -e "  Or manually inside Isaac Sim Script Editor:"
+    echo ""
+    echo -e "    ${CYAN}exec(open('${PROJECT_ROOT}/start_server.py').read())${NC}"
+    echo ""
+fi
+
 echo -e "${BOLD}Once the server prints 'Server running!', open your browser to:${NC}"
 echo -e "  ${CYAN}http://${IP}:5173${NC}"
 echo ""
 echo -e "Management commands:"
+echo -e "  ${CYAN}./launch.sh --all${NC}      Frontend + Isaac Sim together"
+echo -e "  ${CYAN}./launch.sh --isaac-only${NC} Start Isaac Sim only"
 echo -e "  ${CYAN}./launch.sh --status${NC}   Check services"
 echo -e "  ${CYAN}./launch.sh --stop${NC}     Stop frontend"
 echo ""
