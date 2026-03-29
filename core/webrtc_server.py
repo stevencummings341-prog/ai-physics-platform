@@ -312,15 +312,45 @@ class WebRTCServer:
         self.simulation_control_enabled = False
         self._monitor_task: Optional[asyncio.Task] = None
 
-        # Experiment 1
+        # Experiment 1 — angular momentum
         self.exp1_disk_mass = EXP1_DEFAULT_DISK_MASS
         self.exp1_ring_mass = EXP1_DEFAULT_RING_MASS
         self.exp1_initial_vel = EXP1_DEFAULT_INITIAL_VELOCITY
 
-        # Experiment 2
+        # Experiment 2 — large-amplitude pendulum
         self.exp2_initial_angle = EXP2_DEFAULT_INITIAL_ANGLE
         self.exp2_mass1 = EXP2_DEFAULT_MASS1
         self.exp2_mass2 = EXP2_DEFAULT_MASS2
+
+        # Experiment 3 — ballistic pendulum
+        self.exp3_projectile_mass = 0.05
+        self.exp3_pendulum_mass = 2.0
+
+        # Experiment 4 — driven damped oscillation
+        self.exp4_damping = 0.5
+        self.exp4_frequency = 1.0
+
+        # Experiment 5 — rotational inertia
+        self.exp5_pivot = 25.0
+        self.exp5_angle = 10.0
+
+        # Experiment 6 — centripetal force
+        self.exp6_mass = 0.5
+        self.exp6_radius = 0.3
+        self.exp6_angular_velocity = 5.0
+
+        # Experiment 7 — momentum conservation
+        self.exp7_mass1 = 1.0
+        self.exp7_mass2 = 1.0
+        self.exp7_velocity1 = 5.0
+        self.exp7_elasticity = 1.0
+
+        # Experiment 8 — resonance in air column
+        self.exp8_length = 50.0
+        self.exp8_frequency = 512.0
+
+        # Generic per-experiment parameter store for telemetry
+        self._exp_params: Dict[str, Dict[str, float]] = {}
 
         self.current_experiment = "1"
         self.exp2_angle_history: list = []
@@ -483,6 +513,56 @@ class WebRTCServer:
         elif mtype == "set_exp2_mass2":
             self.exp2_mass2 = float(data.get("value", 1.0))
             await self._apply_exp2_params()
+        elif mtype == "set_exp2_offset1":
+            self._store_param("3", "offset1", data)
+        elif mtype == "set_exp2_offset2":
+            self._store_param("3", "offset2", data)
+
+        # Experiment 3 — ballistic pendulum
+        elif mtype == "set_projectile_mass":
+            self.exp3_projectile_mass = float(data.get("value", 0.05))
+            await self._apply_mass_at("/World/exp3/projectile", self.exp3_projectile_mass)
+        elif mtype == "set_pendulum_mass":
+            self.exp3_pendulum_mass = float(data.get("value", 2.0))
+            await self._apply_mass_at("/World/exp3/pendulum", self.exp3_pendulum_mass)
+
+        # Experiment 4 — driven damped oscillation
+        elif mtype == "set_damping":
+            self.exp4_damping = float(data.get("value", 0.5))
+        elif mtype == "set_frequency":
+            val = float(data.get("value", 1.0))
+            if self.current_experiment == "4":
+                self.exp4_frequency = val
+            elif self.current_experiment == "8":
+                self.exp8_frequency = val
+
+        # Experiment 5 — rotational inertia
+        elif mtype == "set_pivot":
+            self.exp5_pivot = float(data.get("value", 25.0))
+        elif mtype == "set_angle":
+            self.exp5_angle = float(data.get("value", 10.0))
+
+        # Experiment 6 — centripetal force
+        elif mtype == "set_radius":
+            self.exp6_radius = float(data.get("value", 0.3))
+        elif mtype == "set_angular_velocity":
+            self.exp6_angular_velocity = float(data.get("value", 5.0))
+
+        # Experiment 7 — momentum conservation
+        elif mtype == "set_mass1":
+            self.exp7_mass1 = float(data.get("value", 1.0))
+            await self._apply_mass_at("/World/exp7/cart1", self.exp7_mass1)
+        elif mtype == "set_mass2":
+            self.exp7_mass2 = float(data.get("value", 1.0))
+            await self._apply_mass_at("/World/exp7/cart2", self.exp7_mass2)
+        elif mtype == "set_velocity1":
+            self.exp7_velocity1 = float(data.get("value", 5.0))
+        elif mtype == "set_elasticity":
+            self.exp7_elasticity = float(data.get("value", 1.0))
+
+        # Experiment 8 — resonance in air column
+        elif mtype == "set_length":
+            self.exp8_length = float(data.get("value", 50.0))
 
     # --- Helpers -----------------------------------------------------------
 
@@ -493,6 +573,24 @@ class WebRTCServer:
         self.exp2_period_samples = []
         self.exp2_zero_cross_times = []
         self.exp2_last_angle_sign = None
+
+    def _store_param(self, exp_id: str, key: str, data: dict):
+        """Store a generic parameter for experiments that don't need immediate USD apply."""
+        self._exp_params.setdefault(exp_id, {})[key] = float(data.get("value", 0))
+
+    async def _apply_mass_at(self, prim_path: str, mass: float):
+        """Apply MassAPI to any prim — shared helper for exp3-8."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsValid():
+                if not prim.HasAPI(UsdPhysics.MassAPI):
+                    UsdPhysics.MassAPI.Apply(prim)
+                UsdPhysics.MassAPI(prim).GetMassAttr().Set(float(mass))
+        except Exception as exc:
+            carb.log_error(f"apply_mass_at({prim_path}): {exc}")
 
     async def _switch_camera(self, experiment_id: str):
         try:
@@ -506,17 +604,20 @@ class WebRTCServer:
                 return
             camera = UsdGeom.Camera(prim)
             xform = UsdGeom.Xformable(prim)
-            ops = xform.GetOrderedXformOps()
-            translate_op = next((o for o in ops if o.GetOpType() == UsdGeom.XformOp.TypeTranslate), None)
-            orient_op = next((o for o in ops if o.GetOpType() == UsdGeom.XformOp.TypeOrient), None)
-            if not translate_op:
-                translate_op = xform.AddTranslateOp()
-            if not orient_op:
-                orient_op = xform.AddOrientOp()
+
+            xform.ClearXformOpOrder()
+            translate_op = xform.AddTranslateOp()
+            orient_op = xform.AddOrientOp()
 
             presets = {
-                "1": (Gf.Vec3d(3.54, 4.79, 2.73), Gf.Quatd(0.229, 0.148, 0.522, 0.808)),
-                "2": (Gf.Vec3d(1.17, 5.38, 2.55), Gf.Quatd(0.014, 0.010, 0.563, 0.826)),
+                "1": (Gf.Vec3d(3.458, 4.154, 2.507), Gf.Quatd(0.808, 0.229, 0.148, 0.522)),
+                "2": (Gf.Vec3d(1.170, 5.385, 2.553), Gf.Quatd(0.826, 0.014, 0.010, 0.563)),
+                "3": (Gf.Vec3d(-0.560, 6.867, 3.155), Gf.Quatd(0.808, 0.229, 0.148, 0.522)),
+                "4": (Gf.Vec3d(0.6, 0.6, 0.3),       Gf.Quatd(0.88, 0.12, 0.38, 0.25)),
+                "5": (Gf.Vec3d(0.8, 0.8, 0.5),       Gf.Quatd(0.86, 0.14, 0.42, 0.22)),
+                "6": (Gf.Vec3d(0.25, 0.35, 0.2),      Gf.Quatd(0.92, 0.08, 0.32, 0.18)),
+                "7": (Gf.Vec3d(1.0, 1.0, 0.6),        Gf.Quatd(0.84, 0.16, 0.46, 0.24)),
+                "8": (Gf.Vec3d(0.15, 0.20, 0.15),     Gf.Quatd(0.94, 0.06, 0.28, 0.16)),
             }
             if experiment_id in presets:
                 pos, quat = presets[experiment_id]
@@ -640,6 +741,53 @@ class WebRTCServer:
         self.exp2_last_angle_sign = sign
         return self.exp2_period
 
+    # --- Physics readback helpers for exp3-8 --------------------------------
+
+    def _read_velocity(self, prim_path: str) -> float:
+        """Read linear velocity magnitude of a rigid body."""
+        try:
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(prim_path)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_linear_velocity(h)
+                if v:
+                    return round(math.sqrt(v[0]**2 + v[1]**2 + v[2]**2), 2)
+        except Exception:
+            pass
+        return 0.0
+
+    def _read_kinetic_energy(self, prim_path: str, mass: float) -> float:
+        vel = self._read_velocity(prim_path)
+        return round(0.5 * mass * vel * vel, 2)
+
+    def _read_displacement(self, prim_path: str) -> float:
+        """Read Z-position offset from origin (for oscillation experiments)."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return 0.0
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsValid():
+                xf = UsdGeom.Xformable(prim)
+                mtx = xf.ComputeLocalToWorldTransform(0)
+                return round(float(mtx.ExtractTranslation()[2]), 3)
+        except Exception:
+            pass
+        return 0.0
+
+    def _read_total_momentum(self) -> float:
+        """Sum of momenta for two-cart collision (exp7)."""
+        v1 = self._read_velocity("/World/exp7/cart1")
+        v2 = self._read_velocity("/World/exp7/cart2")
+        return round(self.exp7_mass1 * v1 + self.exp7_mass2 * v2, 2)
+
+    def _read_total_ke(self) -> float:
+        ke1 = self._read_kinetic_energy("/World/exp7/cart1", self.exp7_mass1)
+        ke2 = self._read_kinetic_energy("/World/exp7/cart2", self.exp7_mass2)
+        return round(ke1 + ke2, 2)
+
     # --- Telemetry loop ----------------------------------------------------
 
     async def _telemetry_loop(self):
@@ -673,6 +821,49 @@ class WebRTCServer:
                             "initial_angle": self.exp2_initial_angle,
                             "mass1": self.exp2_mass1,
                             "mass2": self.exp2_mass2,
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "3":
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "velocity": self._read_velocity("/World/exp3/projectile"),
+                            "energy": self._read_kinetic_energy("/World/exp3/projectile", self.exp3_projectile_mass),
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "4":
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "displacement": self._read_displacement("/World/exp4/oscillator"),
+                            "amplitude": abs(self._read_displacement("/World/exp4/oscillator")),
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "5":
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "period": 0.0,
+                            "inertia": 0.0,
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "6":
+                        fc = self.exp6_mass * self.exp6_radius * self.exp6_angular_velocity ** 2
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "centripetal_force": round(fc, 2),
+                            "tension": round(fc, 2),
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "7":
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "total_momentum": self._read_total_momentum(),
+                            "kinetic_energy": self._read_total_ke(),
+                            "is_running": tl.is_playing(),
+                        }}
+                    elif self.current_experiment == "8":
+                        msg = {"type": "telemetry", "data": {
+                            "timestamp": now,
+                            "amplitude": 0.0,
+                            "resonance_peaks": 0.0,
                             "is_running": tl.is_playing(),
                         }}
                     else:

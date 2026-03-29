@@ -179,8 +179,6 @@ class IsaacService {
       };
 
       console.log('Sending load USD command:', message);
-      console.log(`  → Will load: /home/zhiren/Isaaclab_Assets/Experiment/exp.usd`);
-      console.log(`  → Camera config: camera/usd${experimentNumber}.py`);
 
       if (this.ws) {
         this.ws.send(JSON.stringify(message));
@@ -336,8 +334,7 @@ class IsaacService {
   public async pauseSimulation(): Promise<void> {
     console.log('Pausing simulation...');
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      // 发送正确的消息格式：{ type: "pause_simulation" }
-      this.ws.send(JSON.stringify({ type: 'pause_simulation' }));
+      this.ws.send(JSON.stringify({ type: 'stop_simulation' }));
     }
   }
 
