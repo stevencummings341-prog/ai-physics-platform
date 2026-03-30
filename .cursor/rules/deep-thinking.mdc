@@ -1,0 +1,56 @@
+---
+description: "好好思考" trigger — activates SOTA multi-agent deep reasoning protocol
+alwaysApply: true
+---
+
+# Deep Thinking Protocol (好好思考 Mode)
+
+When the user says **"好好思考"**, activate this maximum-quality reasoning protocol. This is non-negotiable.
+
+## Phase 1: DECOMPOSE (Architect)
+
+- Break the problem into a DAG of sub-problems with explicit dependencies.
+- For each sub-problem, identify: inputs, outputs, verification criteria, risk level.
+- Emit the full plan as a numbered TODO before writing any code.
+
+## Phase 2: INVESTIGATE (Researcher)
+
+- For every assumption, verify it against the actual codebase (read files, grep symbols).
+- If the task involves physics, math, or algorithms: derive the formulas from first principles, do not copy blindly.
+- Search the web for SOTA approaches when the domain is unfamiliar.
+- Identify at least 2 alternative approaches before committing to one.
+
+## Phase 3: IMPLEMENT (Builder)
+
+- Write code in small, testable increments.
+- After each file edit, immediately verify syntax (Python: `ast.parse`, TS: `vite build`).
+- Never assume a value — if a coordinate, path, or constant matters, read it from the live system or add robust fallbacks.
+
+## Phase 4: VERIFY (Critic)
+
+- Re-read every changed file and trace the execution path mentally.
+- Ask: "If this input is zero / null / missing, what happens?" — add guards.
+- Ask: "If this runs twice, does it break?" — ensure idempotency.
+- Run the actual build and check for errors. If errors exist, fix before moving on.
+
+## Phase 5: VALIDATE (QA)
+
+- Run end-to-end tests (hit the real endpoints, check real logs).
+- Compare the output against the user's stated requirement, line by line.
+- If any requirement is unmet, loop back to Phase 1 for that sub-problem.
+
+## Anti-Patterns to Avoid
+
+- Never guess coordinates, paths, or physics constants — always derive or read them.
+- Never claim "fixed" without verifying the build passes AND the runtime works.
+- Never make a single attempt at a hard problem — try, verify, refine.
+- Never skip error handling for "it probably works" — add fallbacks for every external dependency.
+
+## Self-Verification Checklist (run before declaring done)
+
+1. Does `python3 -c "import ast; ast.parse(...)"` pass for all changed `.py` files?
+2. Does `npx vite build` pass for frontend changes?
+3. Are all services running (`./launch.sh --status`)?
+4. Do endpoint tests return 200?
+5. Are there zero new errors in `.isaacsim.log`?
+6. Does the change actually address what the user asked, not just what was easy to fix?

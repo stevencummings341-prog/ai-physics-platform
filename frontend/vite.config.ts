@@ -25,6 +25,10 @@ export default defineConfig({
         rewriteWsOrigin: true,
         rewrite: (path) => path.replace(/^\/ws/, ''),
       },
+      '/video_feed': {
+        target: 'ws://127.0.0.1:8080',
+        ws: true,
+      },
     },
   },
 })

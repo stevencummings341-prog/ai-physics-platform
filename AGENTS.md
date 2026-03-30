@@ -2,6 +2,10 @@
 
 Instructions for AI coding agents working on this project.
 
+## Deep Thinking Protocol
+
+When the user says **"好好思考"** (think deeply), activate the SOTA multi-agent reasoning protocol defined in `.cursor/rules/deep-thinking.mdc`. This triggers a 5-phase process: DECOMPOSE → INVESTIGATE → IMPLEMENT → VERIFY → VALIDATE. No shortcuts. Every assumption must be verified against live data. Every fix must be build-tested before declaring done.
+
 ## Project Overview
 
 Full-stack physics experiment platform on a university Linux server (NVIDIA RTX 5090):

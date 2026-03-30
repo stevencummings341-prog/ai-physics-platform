@@ -21,7 +21,11 @@ import sys
 import time
 from typing import Any, Dict, Optional, Set
 
+import io
+import random
+
 import numpy as np
+from PIL import Image
 
 # Isaac Sim core — must already be initialised before this module loads
 import carb
@@ -245,26 +249,42 @@ class IsaacSimVideoTrack(VideoStreamTrack):
 
 
 # ===================================================================
-# Camera controller
+# Camera controller (orbit / pan / zoom around a target via lookAt)
 # ===================================================================
 class CameraController:
     def __init__(self):
-        self.distance = 10.0
-        self.azimuth = 45.0
-        self.elevation = 30.0
+        self.distance = 0.5
+        self.azimuth = -45.0
+        self.elevation = 40.0
         self.target = Gf.Vec3d(0, 0, 0)
 
+    def set_from_eye_target(self, eye: Gf.Vec3d, target: Gf.Vec3d):
+        d = eye - target
+        self.target = target
+        self.distance = d.GetLength()
+        horiz = math.sqrt(d[0]**2 + d[1]**2)
+        self.elevation = math.degrees(math.atan2(d[2], horiz)) if horiz > 0.001 else 90.0
+        self.azimuth = math.degrees(math.atan2(d[1], d[0]))
+
     def orbit(self, dx, dy):
-        self.azimuth = (self.azimuth + dx * 0.3) % 360
-        self.elevation = max(-89, min(89, self.elevation + dy * 0.3))
+        self.azimuth = (self.azimuth + dx * 0.4) % 360
+        self.elevation = max(5, min(85, self.elevation + dy * 0.4))
         self._apply()
 
     def zoom(self, delta):
-        self.distance = max(1.0, self.distance + delta * 0.1)
+        self.distance = max(0.15, self.distance + delta * 0.05)
+        self._apply()
+
+    def pan(self, dx, dy):
+        scale = self.distance * 0.001
+        az = math.radians(self.azimuth)
+        right = Gf.Vec3d(-math.sin(az), math.cos(az), 0)
+        up = Gf.Vec3d(0, 0, 1)
+        self.target += right * (dx * scale) + up * (dy * scale)
         self._apply()
 
     def reset(self):
-        self.distance, self.azimuth, self.elevation = 10.0, 45.0, 30.0
+        self.distance, self.azimuth, self.elevation = 0.5, -45.0, 40.0
         self._apply()
 
     def _apply(self):
@@ -272,24 +292,140 @@ class CameraController:
             viewport = vp_util.get_active_viewport()
             if not viewport:
                 return
-            cam = viewport.get_active_camera()
-            if not cam:
+            cam_path = viewport.get_active_camera()
+            if not cam_path:
                 return
             az = math.radians(self.azimuth)
             el = math.radians(self.elevation)
-            x = self.distance * math.cos(el) * math.cos(az)
-            y = self.distance * math.cos(el) * math.sin(az)
-            z = self.distance * math.sin(el)
-            pos = self.target + Gf.Vec3d(x, y, z)
+            eye = self.target + Gf.Vec3d(
+                self.distance * math.cos(el) * math.cos(az),
+                self.distance * math.cos(el) * math.sin(az),
+                self.distance * math.sin(el),
+            )
             stage = omni.usd.get_context().get_stage()
             if not stage:
                 return
-            prim = stage.GetPrimAtPath(cam)
-            if prim and prim.IsValid():
-                xform = UsdGeom.Xformable(prim)
-                xform.AddTranslateOp().Set(pos)
+            prim = stage.GetPrimAtPath(cam_path)
+            if not prim or not prim.IsValid():
+                return
+            backward = (eye - self.target).GetNormalized()
+            world_up = Gf.Vec3d(0, 0, 1)
+            right = (world_up ^ backward).GetNormalized()
+            cam_up = (backward ^ right).GetNormalized()
+            m = Gf.Matrix4d(1)
+            m[0, 0], m[0, 1], m[0, 2] = right[0], right[1], right[2]
+            m[1, 0], m[1, 1], m[1, 2] = cam_up[0], cam_up[1], cam_up[2]
+            m[2, 0], m[2, 1], m[2, 2] = backward[0], backward[1], backward[2]
+            m[3, 0], m[3, 1], m[3, 2] = eye[0], eye[1], eye[2]
+            xform = UsdGeom.Xformable(prim)
+            xform.ClearXformOpOrder()
+            xform.AddTransformOp().Set(m)
         except Exception:
             pass
+
+
+# ===================================================================
+# Shared frame capture (used by both WebRTC track and WS fallback)
+# ===================================================================
+class _SharedFrameCapture:
+    """Singleton that grabs viewport frames and encodes to JPEG."""
+    _inst: Optional["_SharedFrameCapture"] = None
+
+    @classmethod
+    def instance(cls) -> "_SharedFrameCapture":
+        if cls._inst is None:
+            cls._inst = cls()
+        return cls._inst
+
+    def __init__(self):
+        self._replicator_ok = False
+        self._render_product = None
+        self._rgb_ann = None
+
+    async def grab_jpeg(
+        self, width: int = 1280, height: int = 720, quality: int = 65
+    ) -> Optional[bytes]:
+        arr = await self._capture_viewport()
+        if arr is None:
+            arr = await self._capture_replicator()
+        if arr is None:
+            return None
+        try:
+            if arr.shape[2] == 4:
+                arr = arr[:, :, :3]
+            img = Image.fromarray(arr)
+            if img.size != (width, height):
+                img = img.resize((width, height), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality)
+            return buf.getvalue()
+        except Exception:
+            return None
+
+    async def _capture_viewport(self):
+        try:
+            from omni.isaac.sensor import Camera
+            viewport = vp_util.get_active_viewport()
+            if viewport is None:
+                return None
+            camera_path = viewport.get_active_camera()
+            if not camera_path:
+                return None
+            if not hasattr(self, "_cam") or self._cam_path != str(camera_path):
+                self._cam = Camera(
+                    prim_path=str(camera_path), resolution=(1280, 720)
+                )
+                self._cam.initialize()
+                self._cam_path = str(camera_path)
+            rgba = self._cam.get_rgba()
+            if rgba is not None and rgba.size > 0:
+                return np.ascontiguousarray(rgba)
+            return None
+        except Exception:
+            if hasattr(self, "_cam"):
+                del self._cam
+            return None
+
+    async def _capture_replicator(self):
+        if not HAS_REPLICATOR:
+            return None
+        try:
+            import omni.replicator.core as rep_mod
+            if not self._replicator_ok or self._rgb_ann is None:
+                viewport = vp_util.get_active_viewport()
+                if not viewport:
+                    return None
+                cam = viewport.get_active_camera()
+                if not cam:
+                    return None
+                if self._render_product:
+                    try:
+                        rep_mod.destroy.render_product(self._render_product)
+                    except Exception:
+                        pass
+                self._render_product = rep_mod.create.render_product(
+                    str(cam), (1280, 720)
+                )
+                self._rgb_ann = rep_mod.AnnotatorRegistry.get_annotator(
+                    "rgb", device="cpu"
+                )
+                self._rgb_ann.attach([self._render_product])
+                app = omni.kit.app.get_app()
+                for _ in range(20):
+                    await app.next_update_async()
+                self._replicator_ok = True
+            try:
+                await rep_mod.orchestrator.step_async()
+            except Exception:
+                pass
+            data = self._rgb_ann.get_data()
+            if data is None or data.size == 0:
+                return None
+            data = np.frombuffer(data, dtype=np.uint8).reshape(*data.shape)
+            return data
+        except Exception:
+            self._replicator_ok = False
+            return None
 
 
 # ===================================================================
@@ -319,6 +455,19 @@ class WebRTCServer:
         self.exp1_disk_mass = EXP1_DEFAULT_DISK_MASS
         self.exp1_ring_mass = EXP1_DEFAULT_RING_MASS
         self.exp1_initial_vel = EXP1_DEFAULT_INITIAL_VELOCITY
+        self.exp1_drop_object = "ring"   # "ring" or "disk"
+        self.exp1_phase = "idle"         # idle → spinning → dropped
+        self.exp1_disk_radius = 0.0467   # 4.67 cm in meters
+        self.exp1_ring_inner_r = 0.02575
+        self.exp1_ring_outer_r = 0.03725
+        self.exp1_omega_before_drop = 0.0
+        self.exp1_omega_after_drop = 0.0
+        self.exp1_initial_am = 0.0
+        self.exp1_final_am = 0.0
+        self.exp1_ke_initial = 0.0
+        self.exp1_ke_final = 0.0
+        self.exp1_drop_offset = 0.0
+        self.exp1_I_final_actual = 0.0
 
         # Experiment 2 — large-amplitude pendulum
         self.exp2_initial_angle = EXP2_DEFAULT_INITIAL_ANGLE
@@ -388,24 +537,24 @@ class WebRTCServer:
         pc.addTrack(self.video_track)
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
 
-        # Patch SDP with real server IP
-        sdp_lines = answer.sdp.splitlines()
-        new_lines = []
-        for line in sdp_lines:
+        sdp_text = pc.localDescription.sdp
+        patched_lines = []
+        for line in sdp_text.splitlines():
             if "c=IN IP4" in line:
-                new_lines.append(f"c=IN IP4 {HOST_IP}")
+                patched_lines.append(f"c=IN IP4 {HOST_IP}")
             elif line.startswith("o="):
-                new_lines.append(line.replace("0.0.0.0", HOST_IP).replace("127.0.0.1", HOST_IP))
+                patched_lines.append(line.replace("0.0.0.0", HOST_IP).replace("127.0.0.1", HOST_IP))
             elif "a=candidate" in line:
-                new_lines.append(line.replace("0.0.0.0", HOST_IP).replace("127.0.0.1", HOST_IP).replace(".local", ""))
+                patched_lines.append(line.replace("0.0.0.0", HOST_IP).replace("127.0.0.1", HOST_IP).replace(".local", ""))
             else:
-                new_lines.append(line)
-        patched = RTCSessionDescription(sdp="\r\n".join(new_lines) + "\r\n", type=answer.type)
-        await pc.setLocalDescription(patched)
+                patched_lines.append(line)
+        patched_sdp = "\r\n".join(patched_lines) + "\r\n"
+
         return web.Response(
             content_type="application/json",
-            text=json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}),
+            text=json.dumps({"sdp": patched_sdp, "type": pc.localDescription.type}),
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
@@ -414,11 +563,16 @@ class WebRTCServer:
         action = p.get("action")
         if action == "orbit":
             self.camera_controller.orbit(p.get("deltaX", 0), p.get("deltaY", 0))
+        elif action == "pan":
+            self.camera_controller.pan(p.get("deltaX", 0), p.get("deltaY", 0))
         elif action == "zoom":
             self.camera_controller.zoom(p.get("delta", 0))
         elif action == "reset":
             self.camera_controller.reset()
-        return web.Response(text=json.dumps({"status": "ok"}))
+        return web.Response(
+            text=json.dumps({"status": "ok"}),
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
 
     async def load_usd(self, request):
         p = await request.json()
@@ -481,11 +635,44 @@ class WebRTCServer:
             self.simulation_control_enabled = False
             self._has_started = False
             self._reset_exp2_state()
+            if self.current_experiment == "1":
+                self.exp1_phase = "idle"
+                self.exp1_omega_before_drop = 0.0
+                self.exp1_omega_after_drop = 0.0
+                self.exp1_initial_am = 0.0
+                self.exp1_final_am = 0.0
+                self.exp1_ke_initial = 0.0
+                self.exp1_ke_final = 0.0
+                self.exp1_drop_offset = 0.0
             tl.stop()
             tl.set_current_time(0.0)
             tl.stop()
             await asyncio.sleep(0.1)
             tl.stop()
+
+        elif mtype == "set_drop_object":
+            self.exp1_drop_object = str(data.get("value", "ring"))
+
+        elif mtype == "spin_disk":
+            if self.current_experiment == "1":
+                self.exp1_phase = "spinning"
+                self._has_started = True
+                await self._set_initial_angular_velocity()
+                self.simulation_control_enabled = True
+                tl.play()
+
+        elif mtype == "drop_object":
+            if self.current_experiment == "1" and self.exp1_phase == "spinning":
+                dv, _ = self._get_angular_velocities()
+                # If live readback fails, use the configured velocity
+                if abs(dv) < 0.01:
+                    dv = self.exp1_initial_vel
+                self.exp1_omega_before_drop = dv
+                I_disk = 0.5 * self.exp1_disk_mass * (self.exp1_disk_radius ** 2)
+                self.exp1_initial_am = I_disk * dv
+                self.exp1_ke_initial = 0.5 * I_disk * dv * dv
+                await self._drop_ring_or_disk()
+                self.exp1_phase = "dropped"
 
         elif mtype == "load_usd":
             exp_id = str(data.get("experiment_id", "1")).strip()
@@ -507,9 +694,11 @@ class WebRTCServer:
             exp_id = data.get("experiment_id", "1")
             self.current_experiment = exp_id
             self._reset_exp2_state()
+            self._cam_deferred_done = False
             await self._switch_camera(exp_id)
             if exp_id == "1":
                 await self._apply_exp1_params()
+                asyncio.ensure_future(self._deferred_camera_readjust())
             elif exp_id == "2":
                 await self._apply_exp2_params()
             await ws.send_json({"type": "experiment_entered", "experiment_id": exp_id})
@@ -625,57 +814,157 @@ class WebRTCServer:
         except Exception as exc:
             carb.log_error(f"apply_mass_at({prim_path}): {exc}")
 
+    @staticmethod
+    def _build_lookat_matrix(eye: Gf.Vec3d, target: Gf.Vec3d, up: Gf.Vec3d = Gf.Vec3d(0, 0, 1)) -> Gf.Matrix4d:
+        backward = (eye - target).GetNormalized()
+        right = (up ^ backward).GetNormalized()
+        cam_up = (backward ^ right).GetNormalized()
+        m = Gf.Matrix4d(1)
+        m[0, 0], m[0, 1], m[0, 2] = right[0], right[1], right[2]
+        m[1, 0], m[1, 1], m[1, 2] = cam_up[0], cam_up[1], cam_up[2]
+        m[2, 0], m[2, 1], m[2, 2] = backward[0], backward[1], backward[2]
+        m[3, 0], m[3, 1], m[3, 2] = eye[0], eye[1], eye[2]
+        return m
+
+    def _find_exp1_center(self) -> Gf.Vec3d:
+        """Robustly locate the experiment-1 apparatus center by traversing
+        stage prims. Falls back to the origin."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return Gf.Vec3d(0, 0, 0)
+            for path in [EXP1_DISK_PATH, EXP1_RING_PATH,
+                         "/World/exp1", "/World/exp1/bracket1"]:
+                p = stage.GetPrimAtPath(path)
+                if p and p.IsValid():
+                    try:
+                        xf = UsdGeom.Xformable(p)
+                        t = xf.ComputeLocalToWorldTransform(0).ExtractTranslation()
+                        pos = Gf.Vec3d(t[0], t[1], t[2])
+                        carb.log_warn(f"Exp1 center from {path}: {pos}")
+                        return pos
+                    except Exception:
+                        pass
+            for prim in stage.Traverse():
+                name = str(prim.GetPath())
+                if "exp1" in name.lower() and prim.IsA(UsdGeom.Xformable):
+                    try:
+                        xf = UsdGeom.Xformable(prim)
+                        t = xf.ComputeLocalToWorldTransform(0).ExtractTranslation()
+                        pos = Gf.Vec3d(t[0], t[1], t[2])
+                        carb.log_warn(f"Exp1 center from traverse {name}: {pos}")
+                        return pos
+                    except Exception:
+                        pass
+        except Exception as exc:
+            carb.log_error(f"_find_exp1_center: {exc}")
+        carb.log_warn("Exp1 center: fallback to origin (0,0,0)")
+        return Gf.Vec3d(0, 0, 0)
+
+    @staticmethod
+    def _try_set_camera_view(eye: Gf.Vec3d, target: Gf.Vec3d) -> bool:
+        """Try Isaac Sim's official Viewport API to position the camera."""
+        eye_list = [float(eye[0]), float(eye[1]), float(eye[2])]
+        tgt_list = [float(target[0]), float(target[1]), float(target[2])]
+        for mod_path in [
+            "omni.isaac.core.utils.viewports",
+            "isaacsim.core.utils.viewports",
+        ]:
+            try:
+                import importlib
+                mod = importlib.import_module(mod_path)
+                mod.set_camera_view(eye=eye_list, target=tgt_list)
+                carb.log_warn(f"Camera set via {mod_path}")
+                return True
+            except (ImportError, AttributeError, Exception):
+                continue
+        return False
+
     async def _switch_camera(self, experiment_id: str):
         try:
             stage = omni.usd.get_context().get_stage()
             if not stage:
                 return
+
+            if experiment_id == "1":
+                center = self._find_exp1_center()
+                # 45-degree isometric overhead: look DOWN at the turntable
+                dist = 0.8
+                target = Gf.Vec3d(center[0], center[1], center[2] + 0.03)
+                eye = Gf.Vec3d(
+                    center[0] + dist * 0.70,
+                    center[1] - dist * 0.70,
+                    center[2] + dist,
+                )
+                focal = 18.0
+            else:
+                presets = {
+                    "2": (Gf.Vec3d(1.17, 5.39, 2.55), Gf.Vec3d(0, 5, 2), 18.0),
+                    "3": (Gf.Vec3d(-0.5, 6.8, 3.2), Gf.Vec3d(0, 6, 2.5), 18.0),
+                }
+                if experiment_id in presets:
+                    eye, target, focal = presets[experiment_id]
+                else:
+                    return
+
+            # Strategy 1: official Isaac Sim Viewport API (most reliable)
+            camera_set = self._try_set_camera_view(eye, target)
+
+            # Strategy 2: direct USD xform fallback
+            if not camera_set:
+                viewport = vp_util.get_active_viewport()
+                camera_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+                cam_prim = stage.GetPrimAtPath(camera_path)
+                if cam_prim and cam_prim.IsValid():
+                    mtx = self._build_lookat_matrix(eye, target)
+                    xform = UsdGeom.Xformable(cam_prim)
+                    xform.ClearXformOpOrder()
+                    xform.AddTransformOp().Set(mtx)
+                    carb.log_warn("Camera set via USD xform fallback")
+
+            # Camera properties (focal length, clipping)
             viewport = vp_util.get_active_viewport()
             camera_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
-            prim = stage.GetPrimAtPath(camera_path)
-            if not prim or not prim.IsValid():
-                return
-            camera = UsdGeom.Camera(prim)
-            xform = UsdGeom.Xformable(prim)
-            ops = xform.GetOrderedXformOps()
+            cam_prim = stage.GetPrimAtPath(camera_path)
+            if cam_prim and cam_prim.IsValid():
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(focal)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
 
-            translate_op = next(
-                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
-                None,
-            )
-            orient_op = next(
-                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeOrient),
-                None,
-            )
-            rotate_xyz_op = next(
-                (op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ),
-                None,
-            )
-
-            if translate_op is None:
-                translate_op = xform.AddTranslateOp()
-            if orient_op is None and rotate_xyz_op is None:
-                orient_op = xform.AddOrientOp()
-
-            presets = {
-                "1": (Gf.Vec3d(3.458, 4.154, 2.507), Gf.Quatd(0.808, 0.229, 0.148, 0.522)),
-                "2": (Gf.Vec3d(1.170, 5.385, 2.553), Gf.Quatd(0.826, 0.014, 0.010, 0.563)),
-                "3": (Gf.Vec3d(-0.560, 6.867, 3.155), Gf.Quatd(0.808, 0.229, 0.148, 0.522)),
-                "4": (Gf.Vec3d(0.6, 0.6, 0.3),       Gf.Quatd(0.88, 0.12, 0.38, 0.25)),
-                "5": (Gf.Vec3d(0.8, 0.8, 0.5),       Gf.Quatd(0.86, 0.14, 0.42, 0.22)),
-                "6": (Gf.Vec3d(0.25, 0.35, 0.2),      Gf.Quatd(0.92, 0.08, 0.32, 0.18)),
-                "7": (Gf.Vec3d(1.0, 1.0, 0.6),        Gf.Quatd(0.84, 0.16, 0.46, 0.24)),
-                "8": (Gf.Vec3d(0.15, 0.20, 0.15),     Gf.Quatd(0.94, 0.06, 0.28, 0.16)),
-            }
-            if experiment_id in presets:
-                pos, quat = presets[experiment_id]
-                translate_op.Set(pos)
-                if orient_op is not None:
-                    orient_op.Set(quat)
-            camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
-            camera.GetFocalLengthAttr().Set(18.147)
+            self.camera_controller.set_from_eye_target(eye, target)
+            carb.log_warn(f"Camera final: eye={eye} target={target}")
         except Exception as exc:
             carb.log_error(f"Camera switch failed: {exc}")
+
+    async def _deferred_camera_readjust(self):
+        """Re-adjust camera after 2s when the stage has fully settled."""
+        await asyncio.sleep(2.0)
+        try:
+            center = self._find_exp1_center()
+            carb.log_warn(f"Deferred camera readjust: center={center}")
+            dist = 0.8
+            target = Gf.Vec3d(center[0], center[1], center[2] + 0.03)
+            eye = Gf.Vec3d(
+                center[0] + dist * 0.70,
+                center[1] - dist * 0.70,
+                center[2] + dist,
+            )
+            if not self._try_set_camera_view(eye, target):
+                stage = omni.usd.get_context().get_stage()
+                if not stage:
+                    return
+                viewport = vp_util.get_active_viewport()
+                cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+                cam_prim = stage.GetPrimAtPath(cam_path)
+                if not cam_prim or not cam_prim.IsValid():
+                    return
+                mtx = self._build_lookat_matrix(eye, target)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+            self.camera_controller.set_from_eye_target(eye, target)
+        except Exception as exc:
+            carb.log_error(f"Deferred camera: {exc}")
 
     async def _set_initial_angular_velocity(self):
         try:
@@ -704,6 +993,58 @@ class WebRTCServer:
                     UsdPhysics.MassAPI(prim).GetMassAttr().Set(float(mass))
         except Exception as exc:
             carb.log_error(f"apply_exp1_params: {exc}")
+
+    async def _drop_ring_or_disk(self):
+        """Drop the ring/disk onto the spinning lower disk with realistic physics.
+
+        Includes: angular momentum conservation, random eccentric offset
+        (parallel-axis theorem), and bearing friction model.
+        """
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            R_d = self.exp1_disk_radius
+            I_disk = 0.5 * self.exp1_disk_mass * (R_d ** 2)
+
+            # Random eccentric offset simulating human hand error (σ ≈ 2mm)
+            offset_x = random.gauss(0, 0.002)
+            offset_y = random.gauss(0, 0.002)
+            self.exp1_drop_offset = math.sqrt(offset_x**2 + offset_y**2)
+
+            if self.exp1_drop_object == "ring":
+                R1 = self.exp1_ring_inner_r
+                R2 = self.exp1_ring_outer_r
+                I_obj_cm = 0.5 * self.exp1_ring_mass * (R1**2 + R2**2)
+            else:
+                I_obj_cm = 0.5 * self.exp1_ring_mass * (R_d ** 2)
+
+            # Parallel-axis theorem: I = I_cm + m*x²
+            I_obj = I_obj_cm + self.exp1_ring_mass * (self.exp1_drop_offset ** 2)
+            I_final = I_disk + I_obj
+            self.exp1_I_final_actual = I_final
+
+            dv, _ = self._get_angular_velocities()
+            if abs(dv) < 0.01:
+                dv = self.exp1_initial_vel
+
+            # Friction loss during collision (bearing drag, 1-3% loss)
+            friction_loss = random.uniform(0.01, 0.03)
+            omega_f = (I_disk * dv) / I_final * (1.0 - friction_loss)
+
+            self.exp1_omega_after_drop = omega_f
+            self.exp1_final_am = I_final * omega_f
+            self.exp1_ke_final = 0.5 * I_final * omega_f * omega_f
+
+            SCALE = 10.0
+            dps = float(omega_f) * (180.0 / math.pi) * SCALE
+            for path in [EXP1_DISK_PATH, EXP1_RING_PATH]:
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid() and prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                    rb = UsdPhysics.RigidBodyAPI(prim)
+                    rb.GetAngularVelocityAttr().Set(Gf.Vec3f(0, 0, dps))
+        except Exception as exc:
+            carb.log_error(f"drop_ring_or_disk: {exc}")
 
     async def _apply_exp2_params(self):
         try:
@@ -846,17 +1187,68 @@ class WebRTCServer:
                 if self.ws_clients:
                     now = time.time()
                     if self.current_experiment == "1":
-                        dv, rv = (0.0, 0.0) if not tl.is_playing() else self._get_angular_velocities()
-                        am = round(self.exp1_disk_mass * dv + self.exp1_ring_mass * rv, 2)
+                        dv_raw, rv_raw = (0.0, 0.0) if not tl.is_playing() else self._get_angular_velocities()
+                        # Analytical fallback when live readback returns 0
+                        if tl.is_playing() and abs(dv_raw) < 0.001:
+                            if self.exp1_phase == "spinning":
+                                dv_raw = self.exp1_initial_vel
+                            elif self.exp1_phase == "dropped":
+                                dv_raw = self.exp1_omega_after_drop
+                                rv_raw = self.exp1_omega_after_drop
+                        if tl.is_playing() and self.exp1_phase == "dropped" and abs(rv_raw) < 0.001:
+                            rv_raw = self.exp1_omega_after_drop
+                        # Sensor noise ±0.002 rad/s (PASCO Rotary Motion Sensor)
+                        dv = dv_raw + random.gauss(0, 0.002) if tl.is_playing() else 0.0
+                        rv = rv_raw + random.gauss(0, 0.002) if tl.is_playing() else 0.0
+                        # Bearing damping: slow linear decay (simulates bearing friction)
+                        if self.exp1_phase == "spinning" and tl.is_playing():
+                            damping = 1.0 - 0.0008
+                            dv *= damping
+                            self.exp1_initial_vel *= damping
+                        R_d = self.exp1_disk_radius
+                        I_disk = 0.5 * self.exp1_disk_mass * (R_d ** 2)
+                        offset = getattr(self, 'exp1_drop_offset', 0.0)
+                        if self.exp1_drop_object == "ring":
+                            R1, R2 = self.exp1_ring_inner_r, self.exp1_ring_outer_r
+                            I_obj = 0.5 * self.exp1_ring_mass * (R1**2 + R2**2) + self.exp1_ring_mass * offset**2
+                        else:
+                            I_obj = 0.5 * self.exp1_ring_mass * (R_d ** 2) + self.exp1_ring_mass * offset**2
+                        I_total = I_disk + I_obj
+                        live_am = I_disk * dv + I_obj * rv
+                        live_ke = 0.5 * I_disk * dv * dv + 0.5 * I_obj * rv * rv
+                        if self.exp1_phase == "dropped" and abs(dv - rv) < 0.3 and self.exp1_omega_after_drop == 0.0:
+                            self.exp1_omega_after_drop = (dv + rv) / 2
+                            self.exp1_final_am = I_total * self.exp1_omega_after_drop
+                            self.exp1_ke_final = 0.5 * I_total * self.exp1_omega_after_drop ** 2
+                        ke_loss_pct = 0.0
+                        if self.exp1_ke_initial > 0:
+                            ke_loss_pct = ((self.exp1_ke_final - self.exp1_ke_initial) / self.exp1_ke_initial) * 100
+                        am_diff_pct = 0.0
+                        if self.exp1_initial_am != 0:
+                            am_diff_pct = ((self.exp1_final_am - self.exp1_initial_am) / self.exp1_initial_am) * 100
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "disk_angular_velocity": round(dv, 2),
-                            "ring_angular_velocity": round(rv, 2),
-                            "angular_momentum": am,
+                            "disk_angular_velocity": round(dv, 3),
+                            "ring_angular_velocity": round(rv, 3),
+                            "angular_momentum": round(live_am, 6),
+                            "kinetic_energy": round(live_ke, 6),
                             "disk_mass": self.exp1_disk_mass,
                             "ring_mass": self.exp1_ring_mass,
                             "initial_velocity": round(self.exp1_initial_vel, 2),
                             "is_running": tl.is_playing(),
+                            "phase": self.exp1_phase,
+                            "drop_object": self.exp1_drop_object,
+                            "drop_offset_cm": round(offset * 100, 3),
+                            "I_initial": round(I_disk, 8),
+                            "I_final": round(I_total, 8),
+                            "omega_before_drop": round(self.exp1_omega_before_drop, 4),
+                            "omega_after_drop": round(self.exp1_omega_after_drop, 4),
+                            "initial_angular_momentum": round(self.exp1_initial_am, 6),
+                            "final_angular_momentum": round(self.exp1_final_am, 6),
+                            "am_diff_percent": round(am_diff_pct, 2),
+                            "ke_initial": round(self.exp1_ke_initial, 6),
+                            "ke_final": round(self.exp1_ke_final, 6),
+                            "ke_loss_percent": round(ke_loss_pct, 2),
                         }}
                     elif self.current_experiment == "2":
                         angle = period = 0.0
@@ -924,6 +1316,34 @@ class WebRTCServer:
                 pass
             await asyncio.sleep(TELEMETRY_BROADCAST_INTERVAL)
 
+    # --- WebSocket JPEG video fallback (works through SSH tunnels) ---------
+
+    async def video_feed_handler(self, request):
+        """Stream viewport frames as JPEG over a WebSocket.
+
+        Used as a fallback when WebRTC ICE cannot connect (e.g. SSH tunnel).
+        Lower quality/fps than WebRTC but works over any TCP proxy.
+        """
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        carb.log_warn("WS video feed client connected")
+
+        capture = _SharedFrameCapture.instance()
+        try:
+            while not ws.closed:
+                jpeg_bytes = await capture.grab_jpeg(
+                    width=1920, height=1080, quality=80
+                )
+                if jpeg_bytes:
+                    await ws.send_bytes(jpeg_bytes)
+                await asyncio.sleep(1.0 / 24)  # ~24 fps
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        except Exception as exc:
+            carb.log_error(f"video_feed error: {exc}")
+        carb.log_warn("WS video feed client disconnected")
+        return ws
+
     # --- Lifecycle ---------------------------------------------------------
 
     async def start(self):
@@ -935,6 +1355,7 @@ class WebRTCServer:
         app.router.add_post("/offer", self.offer)
         app.router.add_post("/camera", self.camera_control)
         app.router.add_post("/load_usd", self.load_usd)
+        app.router.add_get("/video_feed", self.video_feed_handler)
 
         async def _cors_options(r):
             return web.Response(headers={

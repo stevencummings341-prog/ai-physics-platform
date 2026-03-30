@@ -1,17 +1,18 @@
 
 
 // 实验控制组件类型
-export type ControlType = 'slider' | 'button' | 'toggle';
+export type ControlType = 'slider' | 'button' | 'toggle' | 'select';
 
 export interface ControlConfig {
   id: string;
   label: string;
   type: ControlType;
-  min?: number; // 仅 Slider 用
-  max?: number; // 仅 Slider 用
-  step?: number; // 仅 Slider 用
-  defaultValue?: number | boolean;
-  command: string; // 发送给后端的指令名
+  min?: number;
+  max?: number;
+  step?: number;
+  defaultValue?: number | boolean | string;
+  command: string;
+  options?: { label: string; value: string }[];
 }
 
 // 图表配置

@@ -4,22 +4,22 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-01-angular-momentum',
     title: 'Conservation of Angular Momentum',
-    description: 'Study the conservation of angular momentum in rotating systems.',
+    description: 'Verify angular momentum conservation by dropping a ring or disk onto a spinning turntable and measuring the angular velocity change.',
     thumbnail: 'https://picsum.photos/seed/angular-momentum/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '1',
     difficulty: 'Easy',
     isLocked: false,
     controls: [
-      { id: 'disk_mass', label: 'Disk (Lower) Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_disk_mass' },
-      { id: 'ring_mass', label: 'Disk (Upper) Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_ring_mass' },
-      { id: 'initial_velocity', label: 'Initial Angular Velocity (rad/s)', type: 'slider', min: 0, max: 10, step: 0.5, defaultValue: 5.0, command: 'set_initial_velocity' },
-      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset_env' }
+      { id: 'initial_velocity', label: 'Initial ω (rad/s)', type: 'slider', min: 15, max: 30, step: 0.5, defaultValue: 20, command: 'set_initial_velocity' },
     ],
     chartConfig: [
-      { key: 'disk_angular_velocity', color: '#00f3ff', label: 'Disk (Lower) ω (rad/s)', yAxisId: 'left' },
-      { key: 'ring_angular_velocity', color: '#10b981', label: 'Disk (Upper) ω (rad/s)', yAxisId: 'left' }
+      { key: 'disk_angular_velocity', color: '#3b82f6', label: 'Lower Disk ω (rad/s)', yAxisId: 'left' },
+      { key: 'ring_angular_velocity', color: '#10b981', label: 'Object ω (rad/s)', yAxisId: 'left' },
+      { key: 'angular_momentum', color: '#f59e0b', label: 'L (kg·m²/s)', yAxisId: 'right' }
+    ],
+    extraMetrics: [
+      { key: 'kinetic_energy', label: 'KE (J)', color: '#ef4444' }
     ]
   },
   {

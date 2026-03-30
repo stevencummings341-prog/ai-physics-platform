@@ -1,304 +1,300 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Brush } from 'recharts';
-import {
-  ArrowLeft, Activity
-} from 'lucide-react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { ArrowLeft, Activity, Download, FileText } from 'lucide-react';
 import { isaacService, type SimulationState } from '../services/isaacService';
 import { ConnectionStatus, type TelemetryData, type ExperimentConfig } from '../types';
 import WebRTCIsaacViewer from './WebRTCIsaacViewer';
 import { SERVER_CONFIG } from '../config';
+import { pdf } from '@react-pdf/renderer';
+import LabReportPDF from './LabReportPDF';
+
+// ═══════════════════════════════════════════════════════════════════════
+// Module 1 — Hardcoded Physics Constants (g and cm)
+// ═══════════════════════════════════════════════════════════════════════
+
+const PHYS = {
+  ring:      { mass: 469.05, rIn: 2.575, rOut: 3.725 },
+  lowerDisk: { mass: 121.86, r: 4.670 },
+  upperDisk: { mass: 121.23, r: 4.690 },
+  pulley:    { mass: 7.02,   r: 2.295 },
+} as const;
+
+const IRI =
+  0.5 * PHYS.lowerDisk.mass * PHYS.lowerDisk.r ** 2 +
+  0.5 * PHYS.pulley.mass * PHYS.pulley.r ** 2;
+
+type DroppedObject = 'Ring' | 'Upper Disk';
+
+function calculateFRI(object: DroppedObject, xCm: number, mass: number): number {
+  if (object === 'Ring') {
+    return IRI + 0.5 * mass * (PHYS.ring.rIn ** 2 + PHYS.ring.rOut ** 2) + mass * xCm ** 2;
+  }
+  return IRI + 0.5 * mass * PHYS.upperDisk.r ** 2;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Types
+// ═══════════════════════════════════════════════════════════════════════
+
+interface TrialData {
+  trial: number;
+  object: DroppedObject;
+  dropMass: number;
+  iav: number;
+  fav: number;
+  x: number;
+  iri: number;
+  fri: number;
+  iam: number;
+  fam: number;
+  pctDiff: number;
+  initK: number;
+  finalK: number;
+  energyPct: number;
+}
 
 interface ExperimentViewProps {
   config: ExperimentConfig;
   onBack: () => void;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Main Component
+// ═══════════════════════════════════════════════════════════════════════
+
 const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
+  // ── Connection ──
   const [status, setStatus] = useState<ConnectionStatus>(ConnectionStatus.DISCONNECTED);
-  const [dataHistory, setDataHistory] = useState<TelemetryData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [simState, setSimState] = useState<SimulationState>({ running: false, paused: false, time: 0, step: 0 });
 
-  // 仿真状态
-  const [simState, setSimState] = useState<SimulationState>({
-    running: false,
-    paused: false,
-    time: 0,
-    step: 0
-  });
+  // ── Telemetry ──
+  const [dataHistory, setDataHistory] = useState<TelemetryData[]>([]);
+  const latestData = useRef<TelemetryData | null>(null);
 
-  // 保存的历史数据记录
-  const [savedRuns, setSavedRuns] = useState<{id: number, data: TelemetryData[], label: string}[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<number | null>(null); // null = 显示实时数据
-  const [runCounter, setRunCounter] = useState(1);
-
-  // ========== 控制项状态 ==========
-  // 初始化控制值为默认值
-  const initialControlValues = useMemo(() => {
-    const values: Record<string, number> = {};
-    config.controls?.forEach(control => {
-      if (control.type === 'slider' && control.defaultValue !== undefined) {
-        values[control.id] = control.defaultValue as number;
-      }
-    });
-    return values;
-  }, [config.controls]);
-  
-  const [controlValues, setControlValues] = useState<Record<string, number>>(initialControlValues);
-
-  // 当 config 变化时重置控制值
-  useEffect(() => {
-    setControlValues(initialControlValues);
-  }, [initialControlValues]);
-
-  // ========== 控制项处理 ==========
-
-  const handleControlChange = useCallback((controlId: string, value: number | boolean) => {
-    // 更新控制值状态（用于显示）
-    if (typeof value === 'number') {
-      setControlValues(prev => ({ ...prev, [controlId]: value }));
-    }
-
-    const control = config.controls.find(c => c.id === controlId);
-    if (control) {
-      // 特殊处理仿真控制命令
-      if (control.command === 'start_simulation') {
-        // 点击 Run：清空当前数据，开始新的记录
-        setDataHistory([]);
-        setSelectedRunId(null); // 切换到实时数据
-        isaacService.startSimulation();
-      } else if (control.command === 'reset_env') {
-        // 点击 Reset：保存当前数据到历史记录
-        if (dataHistory.length > 0) {
-          // 实验2不显示质量信息，其他实验显示
-          const label = config.experimentNumber === '2'
-            ? `Run ${runCounter}`
-            : `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`;
-
-          const newRun = {
-            id: runCounter,
-            data: [...dataHistory],
-            label
-          };
-          setSavedRuns(prev => [...prev, newRun]);
-          setRunCounter(prev => prev + 1);
-        }
-        isaacService.resetSimulation();
-      } else {
-        isaacService.sendCommand(control.command, value);
-      }
-    }
-  }, [config.controls, dataHistory, runCounter, controlValues]);
-
-  // ========== 初始化 ==========
-
-  useEffect(() => {
-    console.log('Entering experiment:', {
-      id: config.id,
-      experimentNumber: config.experimentNumber,
-      title: config.title,
-      note: 'Using enterExperiment (no USD reload, only camera switch and physics reset)'
-    });
-
-    // 开始加载
-    setIsLoading(true);
-    setLoadingProgress(10);
-
-    // 初始化实验（不重新加载USD，只切换相机和reset物理状态）
-    const initExperiment = async () => {
-      try {
-        // 确保WebSocket已连接（通常已经在LevelSelect中连接了）
-        if (!isaacService.isConnected()) {
-          console.warn('⚠️ WebSocket not connected, reconnecting...');
-          const connected = await isaacService.connect(config.id);
-          if (!connected) {
-            setStatus(ConnectionStatus.ERROR);
-            setLoadingProgress(0);
-            setErrorMessage(`Failed to connect to Isaac Sim server. Ensure the server is running at ${SERVER_CONFIG.wsUrl}`);
-            return;
-          }
-        }
-
-        setStatus(ConnectionStatus.CONNECTED);
-        setLoadingProgress(40);
-
-        // 进入实验（只切换相机和reset物理状态，不重新加载USD）
-        console.log(' Entering experiment (switching camera and resetting physics)...');
-        const entered = await isaacService.enterExperiment(config.experimentNumber);
-
-        if (entered) {
-          console.log('✅ Experiment entered with camera config');
-          setLoadingProgress(80);
-
-          // 发送所有 slider 控件的默认值到后端
-          // 实验2：仍发送初始角度，但避免进入时覆盖质量
-          config.controls?.forEach(control => {
-            if (control.type === 'slider' && control.defaultValue !== undefined && control.command) {
-              const isExp2 = config.experimentNumber === '2';
-              const isExp2Param = control.id === 'mass1' || control.id === 'mass2';
-              if (isExp2 && isExp2Param) {
-                return;
-              }
-              console.log(` Sending default value for ${control.id}: ${control.defaultValue}`);
-              isaacService.sendCommand(control.command, control.defaultValue as number);
-            }
-          });
-
-          // 加载完成后，立即查询仿真状态
-          setTimeout(() => {
-            isaacService.requestSimulationState();
-            setLoadingProgress(100);
-
-            // 延迟一下再隐藏加载界面，让用户看到100%
-            setTimeout(() => {
-              setIsLoading(false);
-            }, 300);
-          }, 500);
-        } else {
-          console.warn('⚠️ Failed to enter experiment');
-          setLoadingProgress(0);
-          setErrorMessage('Failed to enter experiment. Please check the server status.');
-        }
-      } catch (error) {
-        console.error('❌ Experiment initialization error:', error);
-        setStatus(ConnectionStatus.ERROR);
-        setLoadingProgress(0);
-        setErrorMessage('An error occurred while entering the experiment.');
-      }
-    };
-
-    // 执行初始化
-    initExperiment();
-
-    // 订阅遥测数据（带平滑处理）
-    const unsubscribeTelemetry = isaacService.onTelemetry((data) => {
-      setDataHistory(prev => {
-        // 增加历史数据长度到 120 点，让曲线更完整
-        const maxLength = 120;
-        
-        // 如果有足够的历史数据，应用指数移动平均平滑
-        let smoothedData = { ...data };
-        if (prev.length > 0) {
-          const lastData = prev[prev.length - 1];
-          const smoothFactor = 0.3; // 平滑因子，越小越平滑 (0.1-0.5)
-          
-          // 对数值类型的字段进行平滑处理
-          Object.keys(data).forEach(key => {
-            if (typeof data[key] === 'number' && typeof lastData[key] === 'number' && key !== 'timestamp') {
-              smoothedData[key] = lastData[key] * (1 - smoothFactor) + data[key] * smoothFactor;
-            }
-          });
-        }
-        
-        const newData = [...prev, smoothedData];
-        if (newData.length > maxLength) return newData.slice(newData.length - maxLength);
-        return newData;
-      });
-    });
-
-    // 订阅仿真状态
-    const unsubscribeSimState = isaacService.onSimulationState((state) => {
-      setSimState(state);
-    });
-
-    // 定期轮询状态（作为备用，后端也会主动推送）
-    const statePollingInterval = setInterval(() => {
-      if (isaacService.isConnected()) {
-        isaacService.requestSimulationState();
-      }
-    }, 3000); // 每3秒轮询一次
-
-    return () => {
-      unsubscribeTelemetry();
-      unsubscribeSimState();
-      clearInterval(statePollingInterval);
-      // 不断开连接，保持WebSocket在线
-      console.log(' ExperimentView unmounting, keeping connection alive');
-    };
-  }, [config.id, config.experimentNumber]);
-
-  // 显示的数据：实时模式显示最新数据，历史模式显示保存数据的最后一个点
-  const displayData = selectedRunId === null 
-    ? dataHistory 
-    : (savedRuns.find(r => r.id === selectedRunId)?.data || []);
-  const currentData = displayData.length > 0 ? displayData[displayData.length - 1] : null;
+  const isExp1 = config.experimentNumber === '1';
   const isConnected = status === ConnectionStatus.CONNECTED;
 
-  // 加载界面
+  // ── Exp1: 4-trial state machine ──
+  const [trialNum, setTrialNum] = useState(1);
+  const [phase, setPhase] = useState<'idle' | 'spinning' | 'dropped' | 'recorded'>('idle');
+  const [omegaI, setOmegaI] = useState(20);
+  const [trials, setTrials] = useState<TrialData[]>([]);
+  const [currentFAV, setCurrentFAV] = useState(0);
+  const [currentOffset, setCurrentOffset] = useState(0);
+  const [spinCountdown, setSpinCountdown] = useState(0);
+  const [selectedObject, setSelectedObject] = useState<DroppedObject>('Ring');
+  const [ringMass, setRingMass] = useState(PHYS.ring.mass);
+  const [diskMass, setDiskMass] = useState(PHYS.upperDisk.mass);
+  const [massLocked, setMassLocked] = useState(false);
+  const allDone = trials.length >= 4;
+
+  const dropMass = selectedObject === 'Ring' ? ringMass : diskMass;
+
+  // ── Generic experiment state ──
+  const [controlValues, setControlValues] = useState<Record<string, number>>(() => {
+    const v: Record<string, number> = {};
+    config.controls?.forEach(c => {
+      if (c.type === 'slider' && c.defaultValue !== undefined) v[c.id] = c.defaultValue as number;
+    });
+    return v;
+  });
+
+  // ── Connection & telemetry setup ──
+  useEffect(() => {
+    setIsLoading(true);
+    setLoadingProgress(10);
+    const init = async () => {
+      try {
+        if (!isaacService.isConnected()) {
+          const ok = await isaacService.connect(config.id);
+          if (!ok) { setStatus(ConnectionStatus.ERROR); setErrorMessage('Connection failed'); return; }
+        }
+        setStatus(ConnectionStatus.CONNECTED);
+        setLoadingProgress(40);
+        const entered = await isaacService.enterExperiment(config.experimentNumber);
+        if (entered) {
+          setLoadingProgress(80);
+          if (isExp1) {
+            isaacService.sendCommand('set_drop_object', 'ring');
+            isaacService.sendCommand('set_initial_velocity', 20);
+          }
+          setTimeout(() => { isaacService.requestSimulationState(); setLoadingProgress(100); setTimeout(() => setIsLoading(false), 300); }, 500);
+        } else { setErrorMessage('Failed to enter experiment.'); }
+      } catch { setStatus(ConnectionStatus.ERROR); setErrorMessage('Init error.'); }
+    };
+    init();
+
+    const unsub1 = isaacService.onTelemetry((data) => {
+      latestData.current = data;
+      const clamped = { ...data };
+      for (const k of Object.keys(clamped)) {
+        if (typeof clamped[k] === 'number' && k.includes('velocity') && Math.abs(clamped[k]) < 0.01) {
+          clamped[k] = 0;
+        }
+      }
+      setDataHistory(prev => {
+        const next = [...prev, clamped];
+        return next.length > 300 ? next.slice(-300) : next;
+      });
+    });
+    const unsub2 = isaacService.onSimulationState(setSimState);
+    const poll = setInterval(() => { if (isaacService.isConnected()) isaacService.requestSimulationState(); }, 3000);
+    return () => { unsub1(); unsub2(); clearInterval(poll); };
+  }, [config.id, config.experimentNumber]);
+
+  // ── Spin countdown ──
+  useEffect(() => {
+    if (phase !== 'spinning') { setSpinCountdown(0); return; }
+    setSpinCountdown(3);
+    const iv = setInterval(() => setSpinCountdown(p => (p <= 1 ? (clearInterval(iv), 0) : p - 1)), 1000);
+    return () => clearInterval(iv);
+  }, [phase]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Module 2 — 4-Trial State Machine Actions
+  // ═══════════════════════════════════════════════════════════════════
+
+  const handleSpin = useCallback(() => {
+    if (!massLocked) setMassLocked(true);
+    const serverObj = selectedObject === 'Ring' ? 'ring' : 'disk';
+    isaacService.sendCommand('set_initial_velocity', omegaI);
+    isaacService.sendCommand('set_drop_object', serverObj);
+    isaacService.sendCommand('spin_disk', {});
+    setPhase('spinning');
+    setDataHistory([]);
+  }, [omegaI, selectedObject, massLocked]);
+
+  const handleDrop = useCallback(() => {
+    const x = selectedObject === 'Ring'
+      ? +(0.20 + Math.random() * 0.10).toFixed(4)
+      : 0;
+    setCurrentOffset(x);
+
+    const fri = calculateFRI(selectedObject, x, dropMass);
+    const theoreticalFAV = IRI * omegaI / fri;
+    const frictionLoss = 0.01 + Math.random() * 0.02;
+    const fav = +(theoreticalFAV * (1 - frictionLoss)).toFixed(4);
+    setCurrentFAV(fav);
+
+    isaacService.sendCommand('drop_object', {});
+    setPhase('dropped');
+  }, [selectedObject, omegaI, dropMass]);
+
+  const handleRecord = useCallback(() => {
+    const fri = calculateFRI(selectedObject, currentOffset, dropMass);
+    const iam = IRI * omegaI;
+    const fam = fri * currentFAV;
+    const pctDiff = ((fam - iam) / iam) * 100;
+    const initK = 0.5 * IRI * omegaI * omegaI;
+    const finalK = 0.5 * fri * currentFAV * currentFAV;
+    const energyPct = ((finalK - initK) / initK) * 100;
+
+    setTrials(prev => [...prev, {
+      trial: trialNum,
+      object: selectedObject,
+      dropMass,
+      iav: omegaI, fav: currentFAV, x: currentOffset,
+      iri: IRI, fri, iam, fam, pctDiff,
+      initK, finalK, energyPct,
+    }]);
+    setPhase('recorded');
+  }, [trialNum, omegaI, currentFAV, currentOffset, selectedObject, dropMass]);
+
+  const handleNextTrial = useCallback(() => {
+    isaacService.sendCommand('reset', {});
+    setTrialNum(prev => Math.min(prev + 1, 4));
+    setPhase('idle');
+    setCurrentFAV(0);
+    setCurrentOffset(0);
+    setDataHistory([]);
+  }, []);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Module 3 — CSV Export
+  // ═══════════════════════════════════════════════════════════════════
+
+  const exportCSV = useCallback(() => {
+    if (trials.length === 0) return;
+    const hdr = 'Trial,Object,IAV(rad/s),FAV(rad/s),x(cm),IRI(g*cm2),FRI(g*cm2),IAM(g*cm2/s),FAM(g*cm2/s),%diff,InitK(g*cm2/s2),FinalK(g*cm2/s2),Energy%';
+    const rows = trials.map(t =>
+      [t.trial, t.object, t.iav.toFixed(2), t.fav.toFixed(4), t.x.toFixed(4),
+       t.iri.toFixed(2), t.fri.toFixed(2), t.iam.toFixed(2), t.fam.toFixed(2),
+       t.pctDiff.toFixed(2), t.initK.toFixed(2), t.finalK.toFixed(2), t.energyPct.toFixed(2)
+      ].join(',')
+    );
+    const blob = new Blob([[hdr, ...rows].join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `angular_momentum_trials_${Date.now()}.csv`;
+    a.click();
+  }, [trials]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Module 3 — PDF Generation (@react-pdf/renderer)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const generatePDF = useCallback(async () => {
+    if (trials.length === 0) { alert('Complete at least one trial first.'); return; }
+    const blob = await pdf(
+      <LabReportPDF phys={PHYS} iri={IRI} trials={trials} />
+    ).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Angular_Momentum.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [trials]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Generic experiment handler (non-exp1)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const handleGenericControl = useCallback((controlId: string, value: number | boolean | string) => {
+    if (typeof value === 'number') setControlValues(prev => ({ ...prev, [controlId]: value }));
+    const control = config.controls.find(c => c.id === controlId);
+    if (!control) return;
+    if (control.command === 'start_simulation') {
+      setDataHistory([]);
+      isaacService.startSimulation();
+    } else if (control.command === 'reset_env' || control.command === 'reset') {
+      isaacService.sendCommand('reset', {});
+    } else {
+      isaacService.sendCommand(control.command, value);
+    }
+  }, [config.controls]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Loading screen
+  // ═══════════════════════════════════════════════════════════════════
+
   if (isLoading) {
     return (
-      <div className="h-screen w-full bg-gradient-to-br from-white via-blue-50/30 to-purple-50/30 text-gray-900 flex flex-col items-center justify-center font-sans overflow-hidden relative" style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-        {/* 背景装饰 */}
-        <div className="fixed top-0 right-0 w-[400px] h-[400px] bg-gradient-to-br from-blue-100/40 to-purple-100/40 rounded-full blur-[120px] pointer-events-none" />
-        <div className="fixed bottom-0 left-0 w-[350px] h-[350px] bg-gradient-to-tr from-cyan-100/30 to-pink-100/30 rounded-full blur-[120px] pointer-events-none" />
-
-        {/* 返回按钮 */}
-        <button
-          onClick={onBack}
-          className="absolute top-6 left-6 text-gray-600 hover:text-blue-600 transition-colors flex items-center gap-2 text-sm font-mono border-2 border-gray-200 px-3 py-1.5 rounded-lg hover:bg-white/80 hover:border-blue-300 shadow-sm"
-        >
+      <div className="h-screen w-full bg-gradient-to-br from-white via-blue-50/30 to-purple-50/30 text-gray-900 flex flex-col items-center justify-center font-sans">
+        <button onClick={onBack} className="absolute top-6 left-6 text-gray-600 hover:text-blue-600 flex items-center gap-2 text-sm font-mono border-2 border-gray-200 px-3 py-1.5 rounded-lg">
           <ArrowLeft size={14} /> BACK
         </button>
-
-        {/* 加载内容 */}
-        <div className="flex flex-col items-center gap-8 z-10">
-          {/* 动画图标 */}
-          <div className="relative">
-            <div className="absolute inset-0 blur-2xl opacity-40 bg-gradient-to-r from-blue-400 to-purple-400 rounded-full animate-pulse" />
-            <div className="relative p-6 bg-white/80 backdrop-blur-sm rounded-2xl border-2 border-gray-200 shadow-lg">
-              <Activity size={48} className="text-blue-600 animate-pulse" />
-            </div>
+        <div className="flex flex-col items-center gap-6">
+          <div className="p-6 bg-white/80 rounded-2xl border-2 border-gray-200 shadow-lg">
+            <Activity size={48} className="text-blue-600 animate-pulse" />
           </div>
-
-          {/* 标题 */}
-          <div className="text-center space-y-2">
-            <h2 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-gray-700 via-blue-600 to-purple-600">
-              {config.title}
-            </h2>
-            <p className="text-sm text-gray-500 font-mono">Initializing experiment...</p>
-          </div>
-
-          {/* 进度条 */}
+          <h2 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-gray-700 via-blue-600 to-purple-600">
+            {config.title}
+          </h2>
           {!errorMessage && (
-            <div className="w-80 space-y-2">
-              <div className="h-2 bg-gray-200 rounded-full overflow-hidden shadow-inner">
-                <div
-                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500 ease-out"
-                  style={{ width: `${loadingProgress}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-xs text-gray-500 font-mono">
-                <span>Connecting to server...</span>
-                <span>{loadingProgress}%</span>
+            <div className="w-80">
+              <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-blue-500 to-purple-500 rounded-full transition-all duration-500" style={{ width: `${loadingProgress}%` }} />
               </div>
             </div>
           )}
-
-          {/* 加载状态指示器 */}
-          {!errorMessage && (
-            <div className="flex gap-2">
-              <div className={`w-2 h-2 rounded-full transition-all duration-300 ${loadingProgress >= 10 ? 'bg-blue-500 scale-100' : 'bg-gray-300 scale-75'}`} />
-              <div className={`w-2 h-2 rounded-full transition-all duration-300 ${loadingProgress >= 40 ? 'bg-blue-500 scale-100' : 'bg-gray-300 scale-75'}`} />
-              <div className={`w-2 h-2 rounded-full transition-all duration-300 ${loadingProgress >= 80 ? 'bg-blue-500 scale-100' : 'bg-gray-300 scale-75'}`} />
-              <div className={`w-2 h-2 rounded-full transition-all duration-300 ${loadingProgress >= 100 ? 'bg-blue-500 scale-100' : 'bg-gray-300 scale-75'}`} />
-            </div>
-          )}
-
-          {/* 错误信息 */}
           {errorMessage && (
-            <div className="w-96 space-y-4">
-              <div className="p-4 bg-red-50 border-2 border-red-200 rounded-xl">
-                <p className="text-sm text-red-700 font-mono text-center leading-relaxed">
-                  {errorMessage}
-                </p>
-              </div>
-              <button
-                onClick={() => window.location.reload()}
-                className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-mono font-semibold rounded-lg transition-colors shadow-md hover:shadow-lg"
-              >
-                Retry Connection
-              </button>
+            <div className="w-96 space-y-3">
+              <div className="p-4 bg-red-50 border-2 border-red-200 rounded-xl text-sm text-red-700 font-mono text-center">{errorMessage}</div>
+              <button onClick={() => window.location.reload()} className="w-full px-4 py-2 bg-blue-600 text-white text-sm font-mono rounded-lg">Retry</button>
             </div>
           )}
         </div>
@@ -306,271 +302,441 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     );
   }
 
-  return (
-    <div className="h-screen w-full bg-gradient-to-br from-gray-50 via-blue-50 to-purple-50 text-gray-900 flex flex-col font-sans overflow-hidden" style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-      {/* Top Navigation */}
-      <div className="h-14 border-b border-gray-200 flex items-center justify-between px-6 bg-white/80 backdrop-blur-sm z-20 shadow-sm">
-        <div className="flex items-center gap-4">
-          <button onClick={onBack} className="text-gray-700 hover:text-blue-600 transition-colors flex items-center gap-2 text-sm font-mono border-2 border-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-100 hover:border-blue-400 shadow-sm">
-            <ArrowLeft size={14} /> BACK
-          </button>
-          <div className="h-6 w-px bg-gray-300 mx-2"></div>
-          <div>
-            <h2 className="font-bold text-sm tracking-widest text-blue-600 uppercase">{config.title}</h2>
-            <div className="text-[10px] text-gray-500 font-mono">Experiment {config.experimentNumber}</div>
+  // ═══════════════════════════════════════════════════════════════════
+  // Experiment 1: Angular Momentum — specialised layout
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (isExp1) {
+    return (
+      <div className="h-screen w-full bg-gray-50 text-gray-900 flex flex-col font-sans overflow-hidden">
+        {/* ── Top Bar ── */}
+        <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white/90 backdrop-blur-sm z-20 shadow-sm shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="text-gray-700 hover:text-blue-600 flex items-center gap-1.5 text-xs font-mono border border-gray-300 px-2.5 py-1 rounded-lg">
+              <ArrowLeft size={12} /> BACK
+            </button>
+            <div className="h-5 w-px bg-gray-300" />
+            <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded-lg border">
+              Trial {Math.min(trialNum, 4)} / 4
+            </span>
+            <button onClick={exportCSV} disabled={trials.length === 0}
+              className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-mono rounded-lg flex items-center gap-1 border border-gray-300 disabled:opacity-40">
+              <Download size={11} /> CSV
+            </button>
+            <button onClick={generatePDF} disabled={trials.length === 0}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono rounded-lg flex items-center gap-1 disabled:opacity-40">
+              <FileText size={11} /> PDF Report
+            </button>
+            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              {isConnected ? 'LIVE' : 'OFF'}
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Run 和 Reset 按钮 */}
-          <button
-            onClick={() => {
-              setDataHistory([]);
-              setSelectedRunId(null);
-              isaacService.startSimulation();
-            }}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold rounded-lg transition-all shadow-md hover:shadow-lg flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
-            </svg>
-            RUN
-          </button>
-          <button
-            onClick={() => {
-              if (dataHistory.length > 0) {
-                // 实验2不显示质量信息，其他实验显示
-                const label = config.experimentNumber === '2'
-                  ? `Run ${runCounter}`
-                  : `Run ${runCounter} (M=${controlValues['disk_mass']?.toFixed(1) || '1.0'}kg)`;
+        {/* ── Main Content ── */}
+        <div className="flex-1 flex overflow-hidden">
 
-                const newRun = {
-                  id: runCounter,
-                  data: [...dataHistory],
-                  label
-                };
-                setSavedRuns(prev => [...prev, newRun]);
-                setRunCounter(prev => prev + 1);
-              }
-              isaacService.resetSimulation();
-            }}
-            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-bold rounded-lg transition-all shadow-md hover:shadow-lg flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            RESET
-          </button>
+          {/* ── Left Panel (Module 1) ── */}
+          <div className="w-[280px] bg-white border-r border-gray-200 flex flex-col shrink-0 overflow-y-auto">
 
-          <div className="h-6 w-px bg-gray-300"></div>
+            {/* Physical Constants */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Physical Constants</div>
+              <table className="w-full text-[10px] font-mono border-collapse">
+                <thead>
+                  <tr className="bg-gray-50">
+                    <th className="border border-gray-200 px-1.5 py-1 text-left text-gray-600">Object</th>
+                    <th className="border border-gray-200 px-1.5 py-1 text-right text-gray-600">Mass (g)</th>
+                    <th className="border border-gray-200 px-1.5 py-1 text-right text-gray-600">R (cm)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="border border-gray-200 px-1.5 py-1">Ring</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.ring.mass}</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right text-[9px]">
+                      {PHYS.ring.rIn} / {PHYS.ring.rOut}
+                    </td>
+                  </tr>
+                  <tr className="bg-gray-50/50">
+                    <td className="border border-gray-200 px-1.5 py-1">Lower Disk</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.lowerDisk.mass}</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.lowerDisk.r}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-200 px-1.5 py-1">Upper Disk</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.upperDisk.mass}</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.upperDisk.r}</td>
+                  </tr>
+                  <tr className="bg-gray-50/50">
+                    <td className="border border-gray-200 px-1.5 py-1">Pulley</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.pulley.mass}</td>
+                    <td className="border border-gray-200 px-1.5 py-1 text-right">{PHYS.pulley.r}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div className="mt-2 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-[9px] font-mono text-blue-700">
+                IRI = {IRI.toFixed(2)} g&middot;cm&sup2;
+              </div>
+            </div>
 
-          {/* 连接状态 */}
-          <div className={`flex items-center gap-2 text-xs font-mono px-3 py-1.5 rounded-full border-2 shadow-sm ${
-            isConnected
-              ? 'border-green-500/50 text-green-700 bg-green-50'
-              : 'border-red-500/50 text-red-700 bg-red-50'
-          }`}>
-            <div className={`w-2 h-2 rounded-full ${
-              isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'
-            }`}></div>
-            <span className="font-semibold">{isConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+            {/* Angular Velocity Control */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
+                Initial Angular Velocity
+              </div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <input
+                  type="range" min={15} max={30} step={0.5} value={omegaI}
+                  onChange={e => setOmegaI(parseFloat(e.target.value))}
+                  disabled={phase !== 'idle'}
+                  className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 disabled:opacity-50"
+                />
+                <input
+                  type="number" min={15} max={30} step={0.5} value={omegaI}
+                  onChange={e => { const v = parseFloat(e.target.value); if (v >= 15 && v <= 30) setOmegaI(v); }}
+                  disabled={phase !== 'idle'}
+                  className="w-16 text-center text-sm font-mono font-bold border border-gray-300 rounded-lg py-1 disabled:opacity-50 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+              <div className="text-[9px] text-gray-400 font-mono text-center">
+                Range: 15 &ndash; 30 rad/s
+              </div>
+            </div>
+
+            {/* Dropped Object Selector */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
+                Dropped Object
+              </div>
+              <select
+                value={selectedObject}
+                onChange={e => setSelectedObject(e.target.value as DroppedObject)}
+                disabled={phase !== 'idle'}
+                className="w-full px-2 py-1.5 text-sm font-mono font-bold border border-gray-300 rounded-lg bg-white disabled:opacity-50 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="Ring">Ring</option>
+                <option value="Upper Disk">Upper Disk</option>
+              </select>
+              <div className="text-[9px] text-gray-400 font-mono mt-1">
+                Ring: x = random offset &middot; Upper Disk: x = 0
+              </div>
+            </div>
+
+            {/* Mass Sliders (locked after first trial) */}
+            <div className={`p-3 border-b border-gray-200 ${massLocked ? 'opacity-60' : ''}`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Object Masses</div>
+                {massLocked && <span className="text-[8px] font-mono text-red-500 bg-red-50 px-1.5 py-0.5 rounded border border-red-200">LOCKED</span>}
+              </div>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Ring Mass</span>
+                    <span className="font-bold text-blue-600">{ringMass.toFixed(1)} g</span>
+                  </div>
+                  <input type="range" min={100} max={1000} step={0.5} value={ringMass}
+                    onChange={e => setRingMass(parseFloat(e.target.value))}
+                    disabled={massLocked}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 disabled:cursor-not-allowed" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Upper Disk Mass</span>
+                    <span className="font-bold text-purple-600">{diskMass.toFixed(1)} g</span>
+                  </div>
+                  <input type="range" min={50} max={500} step={0.5} value={diskMass}
+                    onChange={e => setDiskMass(parseFloat(e.target.value))}
+                    disabled={massLocked}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600 disabled:cursor-not-allowed" />
+                </div>
+              </div>
+              {!massLocked && <div className="text-[8px] text-amber-600 font-mono mt-1.5">Masses lock after first Spin</div>}
+            </div>
+
+            {/* Current Trial Info */}
+            <div className="p-3 border-b border-gray-200 bg-gradient-to-b from-indigo-50/50 to-white">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">
+                Current Trial
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <InfoCard label="Trial" value={`${Math.min(trialNum, 4)} / 4`} accent="blue" />
+                <InfoCard label="Object" value={selectedObject} accent={selectedObject === 'Ring' ? 'purple' : 'amber'} />
+                <InfoCard label="Phase" value={phase.toUpperCase()} accent="green" />
+                <InfoCard label="IRI" value={`${IRI.toFixed(1)}`} accent="gray" />
+                {phase === 'dropped' && (
+                  <>
+                    <InfoCard label="FAV" value={currentFAV.toFixed(4)} accent="cyan" />
+                    <InfoCard label="Offset x" value={`${currentOffset.toFixed(4)} cm`} accent="red" />
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Live Chart */}
+            <div className="flex-1 p-2 flex flex-col min-h-[160px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1 flex items-center gap-1">
+                <Activity size={10} /> Angular Velocity
+              </div>
+              <div className="flex-1 w-full min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dataHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="timestamp" hide />
+                    <YAxis stroke="#6b7280" fontSize={9} tickFormatter={v => v.toFixed(1)} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', fontSize: '10px', borderRadius: '6px' }}
+                      labelStyle={{ display: 'none' }}
+                      formatter={(v: number) => v.toFixed(4)}
+                    />
+                    <Line type="monotone" dataKey="disk_angular_velocity" stroke="#3b82f6" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Disk ω" />
+                    <Line type="monotone" dataKey="ring_angular_velocity" stroke="#10b981" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Object ω" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Center: Viewport + Bottom Panel ── */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+
+            {/* WebRTC Viewport */}
+            <div className="flex-1 relative bg-gray-900 min-h-0">
+              <div className="absolute inset-0">
+                <WebRTCIsaacViewer serverUrl={SERVER_CONFIG.httpUrl} usdPath={config.usdPath} className="w-full h-full" />
+              </div>
+            </div>
+
+            {/* ── Bottom Panel (Module 2) ── */}
+            <div className="h-auto max-h-[45%] bg-white border-t-2 border-gray-200 flex flex-col shrink-0">
+
+              {/* Action Bar */}
+              <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+                {/* Step Indicators */}
+                <div className="flex items-center gap-1">
+                  {(['idle', 'spinning', 'dropped', 'recorded'] as const).map((step, i) => (
+                    <React.Fragment key={step}>
+                      {i > 0 && <div className={`w-4 h-0.5 rounded ${
+                        (['idle', 'spinning', 'dropped', 'recorded'].indexOf(phase) >= i) ? 'bg-blue-500' : 'bg-gray-300'
+                      }`} />}
+                      <div className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${
+                        phase === step ? 'bg-blue-600 text-white' :
+                        (['idle', 'spinning', 'dropped', 'recorded'].indexOf(phase) > i) ? 'bg-blue-100 text-blue-600' :
+                        'bg-gray-200 text-gray-400'
+                      }`}>
+                        {step === 'idle' ? 'Setup' : step === 'spinning' ? 'Spinning' : step === 'dropped' ? 'Dropped' : 'Recorded'}
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+
+                <div className="h-5 w-px bg-gray-300" />
+
+                <span className="text-[10px] font-mono text-gray-600">
+                  Object: <span className="font-bold text-gray-900">{selectedObject}</span>
+                </span>
+
+                {phase === 'spinning' && spinCountdown > 0 && (
+                  <span className="text-[10px] font-mono text-amber-600 animate-pulse">
+                    Wait {spinCountdown}s...
+                  </span>
+                )}
+
+                <div className="flex-1" />
+
+                {/* Action Buttons */}
+                <button onClick={handleSpin} disabled={phase !== 'idle' || allDone}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  1. Spin
+                </button>
+                <button onClick={handleDrop} disabled={phase !== 'spinning' || spinCountdown > 0}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  2. Drop
+                </button>
+                <button onClick={handleRecord} disabled={phase !== 'dropped'}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  3. Record
+                </button>
+                {trialNum < 4 ? (
+                  <button onClick={handleNextTrial} disabled={phase !== 'recorded'}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    4. Next Trial
+                  </button>
+                ) : (
+                  <button onClick={generatePDF} disabled={phase !== 'recorded' && trials.length < 4}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-red-600 hover:bg-red-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    Generate PDF
+                  </button>
+                )}
+              </div>
+
+              {/* Trial Data Table */}
+              <div className="flex-1 overflow-auto px-4 py-2">
+                {trials.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-gray-400 text-sm font-mono">
+                    Complete Spin &rarr; Drop &rarr; Record to log trial data
+                  </div>
+                ) : (
+                  <table className="w-full text-[10px] font-mono border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 sticky top-0">
+                        {['#', 'Object', 'IAV', 'FAV', 'x (cm)', 'IRI', 'FRI', 'IAM', 'FAM', '%diff', 'Init K', 'Final K', 'Energy%'].map(h => (
+                          <th key={h} className="border border-gray-200 px-1.5 py-1.5 text-gray-600 font-bold whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trials.map(t => (
+                        <tr key={t.trial} className="hover:bg-blue-50/50">
+                          <td className="border border-gray-200 px-1.5 py-1 text-center font-bold">{t.trial}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-center">{t.object}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.iav.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.fav.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.x.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.iri.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.fri.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.iam.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.fam.toFixed(2)}</td>
+                          <td className={`border border-gray-200 px-1.5 py-1 text-right font-bold ${
+                            Math.abs(t.pctDiff) < 3 ? 'text-green-600' : 'text-red-600'
+                          }`}>{t.pctDiff.toFixed(2)}%</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.initK.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.finalK.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-red-600 font-bold">{t.energyPct.toFixed(2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Guidance text */}
+              <div className="px-4 py-1.5 border-t border-gray-100 text-[9px] font-mono text-gray-400">
+                {phase === 'idle' && !allDone && `Set ω and object, then Spin. Trial ${trialNum}: ${selectedObject} selected.`}
+                {phase === 'spinning' && (spinCountdown > 0 ? `Disk spinning... wait ${spinCountdown}s.` : 'Ready! Click Drop.')}
+                {phase === 'dropped' && `FAV = ${currentFAV.toFixed(4)} rad/s, x = ${currentOffset.toFixed(4)} cm. Click Record.`}
+                {phase === 'recorded' && trialNum < 4 && `Trial ${trialNum} saved. Click Next Trial to proceed.`}
+                {phase === 'recorded' && trialNum >= 4 && 'All 4 trials complete! Generate PDF report.'}
+                {allDone && phase === 'idle' && 'All 4 trials recorded. Click PDF Report to export.'}
+              </div>
+            </div>
           </div>
         </div>
       </div>
+    );
+  }
 
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* Full Screen: 3D Viewport with WebRTC Streaming */}
-        <div className="flex-1 relative bg-gray-100 flex flex-col">
-          <div className="absolute inset-0 bg-[linear-gradient(rgba(100,116,139,0.1)_1px,transparent_1px),linear-gradient(90deg,rgba(100,116,139,0.1)_1px,transparent_1px)] bg-[size:40px_40px] opacity-30 pointer-events-none"></div>
+  // ═══════════════════════════════════════════════════════════════════
+  // Generic Experiment View (non-exp1)
+  // ═══════════════════════════════════════════════════════════════════
 
-          {/* ========== WebRTC VIDEO STREAM (全屏) ========== */}
-          <div className="flex-1 relative z-10">
-            {/* 使用WebRTC实现高性能视频流 */}
-            <WebRTCIsaacViewer
-              serverUrl={SERVER_CONFIG.httpUrl}
-              usdPath={config.usdPath}
-              className="w-full h-full"
-            />
+  return (
+    <div className="h-screen w-full bg-gradient-to-br from-gray-50 via-blue-50 to-purple-50 text-gray-900 flex flex-col font-sans overflow-hidden">
+      {/* Top Bar */}
+      <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white/80 backdrop-blur-sm z-20 shadow-sm">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="text-gray-700 hover:text-blue-600 flex items-center gap-1.5 text-xs font-mono border border-gray-300 px-2.5 py-1 rounded-lg">
+            <ArrowLeft size={12} /> BACK
+          </button>
+          <div className="h-5 w-px bg-gray-300" />
+          <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
+        </div>
+        <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+          <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+          {isConnected ? 'LIVE' : 'OFF'}
+        </div>
+      </div>
 
+      <div className="flex-1 flex overflow-hidden">
+        {/* Viewport */}
+        <div className="flex-1 relative bg-gray-100">
+          <div className="absolute inset-0">
+            <WebRTCIsaacViewer serverUrl={SERVER_CONFIG.httpUrl} usdPath={config.usdPath} className="w-full h-full" />
           </div>
         </div>
 
-        {/* ========== 右侧操作面板 ========== */}
-        {true && (
-        <div className="flex-1 bg-white/90 backdrop-blur-sm border-l border-gray-200 flex flex-col min-w-[280px] max-w-[320px] shadow-lg overflow-y-auto">
-          <div className="grid grid-cols-2 gap-px bg-gray-200 border-b border-gray-200">
-            {/* 渲染 chartConfig 中的指标 */}
-            {config.chartConfig.map((chart) => (
-              <div key={chart.key} className="bg-white p-4">
-                <div className="text-gray-600 text-[10px] font-mono mb-1 uppercase tracking-wider flex items-center gap-1 font-semibold">
-                  <div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: chart.color }}></div>
-                  {chart.label}
-                </div>
-                <div className="text-xl font-mono text-gray-900 font-bold">
-                  {currentData ? (currentData[chart.key]?.toFixed(1) ?? '--') : '--'}
-                </div>
-              </div>
-            ))}
-            {/* 渲染 extraMetrics 中的指标（如果有） */}
-            {config.extraMetrics?.map((metric) => (
-              <div key={metric.key} className="bg-white p-4">
-                <div className="text-gray-600 text-[10px] font-mono mb-1 uppercase tracking-wider flex items-center gap-1 font-semibold">
-                  <div className="w-2 h-2 rounded-full shadow-sm" style={{ backgroundColor: metric.color }}></div>
-                  {metric.label}
-                </div>
-                <div className="text-xl font-mono text-gray-900 font-bold">
-                  {currentData ? (currentData[metric.key]?.toFixed(2) ?? '--') : '--'}
-                </div>
-              </div>
-            ))}
+        {/* Right Panel */}
+        <div className="w-[320px] bg-white/95 border-l border-gray-200 flex flex-col shadow-lg overflow-y-auto">
+          {/* Controls */}
+          <div className="border-b border-gray-200 p-3">
+            <div className="text-[10px] font-bold mb-2 uppercase tracking-wider text-gray-600">Controls</div>
+            <div className="space-y-2">
+              {config.controls.map(control => {
+                if (control.type === 'slider') {
+                  const val = controlValues[control.id] ?? (control.defaultValue as number);
+                  return (
+                    <div key={control.id} className="space-y-0.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-gray-700 text-[10px] font-mono font-semibold">{control.label}</label>
+                        <span className="text-blue-600 text-[10px] font-mono font-bold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">{val.toFixed(1)}</span>
+                      </div>
+                      <input type="range" min={control.min} max={control.max} step={control.step} value={val}
+                        onChange={e => handleGenericControl(control.id, parseFloat(e.target.value))}
+                        className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                    </div>
+                  );
+                }
+                if (control.type === 'button') {
+                  return (
+                    <button key={control.id} onClick={() => handleGenericControl(control.id, true)}
+                      className="w-full px-2 py-2 text-[11px] font-mono font-bold rounded-lg transition-all shadow bg-blue-600 hover:bg-blue-700 text-white">
+                      {control.label}
+                    </button>
+                  );
+                }
+                return null;
+              })}
+            </div>
           </div>
 
-          {/* Control Panel */}
-          {config.controls && config.controls.length > 0 && (
-            <div className="border-b border-gray-200 p-4 bg-gray-50">
-              <div className="text-gray-700 text-xs font-bold mb-3 uppercase tracking-wider">Controls</div>
-              <div className="space-y-3">
-                {config.controls.map((control) => {
-                  if (control.type === 'slider') {
-                    const currentValue = controlValues[control.id] ?? (control.defaultValue as number);
-                    return (
-                      <div key={control.id} className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <label className="text-gray-700 text-xs font-mono font-semibold">{control.label}</label>
-                          <span className="text-blue-600 text-xs font-mono font-bold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                            {currentValue.toFixed(1)}
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min={control.min}
-                          max={control.max}
-                          step={control.step}
-                          value={currentValue}
-                          onChange={(e) => handleControlChange(control.id, parseFloat(e.target.value))}
-                          className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider accent-blue-600"
-                        />
-                      </div>
-                    );
-                  } else if (control.type === 'button') {
-                    return (
-                      <button
-                        key={control.id}
-                        onClick={() => handleControlChange(control.id, true)}
-                        className="w-full px-3 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono font-semibold rounded-lg transition-colors shadow-md hover:shadow-lg"
-                      >
-                        {control.label}
-                      </button>
-                    );
-                  } else if (control.type === 'toggle') {
-                    return (
-                      <div key={control.id} className="flex items-center justify-between">
-                        <label className="text-gray-700 text-xs font-mono font-semibold">{control.label}</label>
-                        <input
-                          type="checkbox"
-                          defaultChecked={control.defaultValue as boolean}
-                          onChange={(e) => handleControlChange(control.id, e.target.checked)}
-                          className="w-4 h-4"
-                        />
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
-              </div>
+          {/* Chart */}
+          <div className="flex-1 p-2 flex flex-col min-h-0">
+            <div className="text-[10px] font-bold mb-1 uppercase tracking-wider text-gray-600 flex items-center gap-1">
+              <Activity size={10} /> Telemetry
             </div>
-          )}
-
-          <div className="flex-1 p-2 flex flex-col min-h-0 bg-white/50">
-            <div className="flex items-center gap-2 text-gray-700 text-xs font-bold p-2 uppercase tracking-wider">
-              <Activity size={14} /> {config.experimentNumber === '2' ? 'Angle' : 'Angular Velocity'}
-            </div>
-            <div className="flex-1 w-full min-h-[200px]">
+            <div className="flex-1 w-full min-h-[180px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={selectedRunId === null ? dataHistory : (savedRuns.find(r => r.id === selectedRunId)?.data || [])}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" vertical={false} />
+                <LineChart data={dataHistory}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
                   <XAxis dataKey="timestamp" hide />
-                  <YAxis
-                    yAxisId="left"
-                    stroke="#6b7280"
-                    fontSize={10}
-                    tickFormatter={(val) => val.toFixed(1)}
-                    domain={config.experimentNumber === '2' ? [-180, 180] : ['auto', 'auto']}
-                  />
-                  <YAxis yAxisId="right" orientation="right" stroke="#6b7280" fontSize={10} tickFormatter={(val) => val.toFixed(1)} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#ffffff', border: '2px solid #e5e7eb', fontSize: '12px', borderRadius: '8px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
-                    labelStyle={{ display: 'none' }}
-                    itemStyle={{ color: '#374151' }}
-                    formatter={(value: number) => value.toFixed(1)}
-                  />
-                  {config.chartConfig.map(chart => (
-                    <Line
-                      key={chart.key}
-                      yAxisId={chart.yAxisId}
-                      type="monotone"
-                      dataKey={chart.key}
-                      stroke={chart.color}
-                      strokeWidth={2}
-                      dot={false}
-                      isAnimationActive={false}
-                    />
+                  <YAxis yAxisId="left" stroke="#6b7280" fontSize={9} tickFormatter={v => v.toFixed(1)} />
+                  <YAxis yAxisId="right" orientation="right" stroke="#6b7280" fontSize={9} />
+                  <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', fontSize: '10px', borderRadius: '6px' }} labelStyle={{ display: 'none' }} />
+                  {config.chartConfig.map(ch => (
+                    <Line key={ch.key} yAxisId={ch.yAxisId} type="monotone" dataKey={ch.key} stroke={ch.color} strokeWidth={1.5} dot={false} isAnimationActive={false} name={ch.label} />
                   ))}
-                  {/* 时间线滑块 - 拖动查看数据（只在查看保存的数据或有足够数据时显示） */}
-                  {displayData.length > 10 && (
-                    <Brush 
-                      dataKey="timestamp" 
-                      height={25} 
-                      stroke="#6366f1"
-                      fill="#f3f4f6"
-                      tickFormatter={() => ''}
-                    />
-                  )}
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            
-            {/* 保存的运行记录选择器 */}
-            {savedRuns.length > 0 && (
-              <div className="border-t border-gray-200 p-3 bg-gray-50">
-                <div className="text-gray-700 text-xs font-bold mb-2 uppercase tracking-wider">Saved Runs</div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setSelectedRunId(null)}
-                    className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-colors ${
-                      selectedRunId === null 
-                        ? 'bg-blue-600 text-white' 
-                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                    }`}
-                  >
-                    Live
-                  </button>
-                  {savedRuns.map(run => (
-                    <button
-                      key={run.id}
-                      onClick={() => setSelectedRunId(run.id)}
-                      className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-colors ${
-                        selectedRunId === run.id 
-                          ? 'bg-purple-600 text-white' 
-                          : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                      }`}
-                    >
-                      {run.label}
-                    </button>
-                  ))}
-                  <button
-                    onClick={() => setSavedRuns([])}
-                    className="px-3 py-1.5 text-xs font-mono rounded-lg bg-red-100 text-red-600 hover:bg-red-200 transition-colors"
-                  >
-                    Clear All
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
-        )}
       </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// Helper Components
+// ═══════════════════════════════════════════════════════════════════════
+
+const InfoCard: React.FC<{ label: string; value: string; accent: string }> = ({ label, value, accent }) => {
+  const colors: Record<string, string> = {
+    blue: 'text-blue-700 bg-blue-50 border-blue-200',
+    purple: 'text-purple-700 bg-purple-50 border-purple-200',
+    cyan: 'text-cyan-700 bg-cyan-50 border-cyan-200',
+    green: 'text-green-700 bg-green-50 border-green-200',
+    amber: 'text-amber-700 bg-amber-50 border-amber-200',
+    red: 'text-red-700 bg-red-50 border-red-200',
+    gray: 'text-gray-700 bg-gray-50 border-gray-200',
+  };
+  return (
+    <div className={`rounded-lg border p-1.5 ${colors[accent] || colors.gray}`}>
+      <div className="text-[8px] font-mono uppercase tracking-wider opacity-60">{label}</div>
+      <div className="text-[10px] font-mono font-bold truncate">{value}</div>
     </div>
   );
 };
