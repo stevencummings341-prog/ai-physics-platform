@@ -44,7 +44,7 @@ Build a full-stack physics experiment platform: Isaac Sim simulation backend + R
 | # | Name | USD | Web UI | Server handlers | Batch (ExperimentBase) |
 |---|------|-----|--------|-----------------|----------------------|
 | 1 | Angular Momentum | ✅ | ✅ | ✅ full telemetry | ✅ sim.py + analysis |
-| 2 | Large Pendulum | ✅ | ✅ | ✅ full telemetry | ❌ |
+| 2 | Large Pendulum | ✅ procedural | ✅ | ✅ full telemetry (RK4) | ✅ sim.py + analysis |
 | 3 | Ballistic Pendulum | ✅ asset | ✅ locked | ✅ stub | ❌ |
 | 4 | Driven Damped Oscillation | ✅ asset | ✅ locked | ✅ stub | ❌ |
 | 5 | Rotational Inertia | ✅ asset | ✅ locked | ✅ stub | ❌ |

@@ -1,0 +1,41 @@
+# Experiment 2 — Large Amplitude Pendulum
+# PASCO EX-5520: Physical compound pendulum with two bobs.
+
+# ---------- Physical parameters ----------
+rod_length: 0.35           # m
+rod_mass: 0.028            # kg
+bob_mass_1: 0.075          # kg (lower bob, red)
+bob_mass_2: 0.075          # kg (upper bob, blue)
+r1: 0.175                  # m (pivot → bob1 distance)
+r2: 0.145                  # m (pivot → bob2 distance)
+damping: 0.0025            # angular damping coefficient
+g: 9.81                    # m/s²
+
+# ---------- Qualitative runs ----------
+small_amp: 0.20            # rad
+large_amp: 2.80            # rad
+qualitative_cycles: 4.0
+
+# ---------- Quantitative sweep ----------
+amp_start: 0.20            # rad
+amp_end: 2.40              # rad
+amp_step: 0.20             # rad
+sweep_cycles: 3.5
+period_zero_amp: 0.10      # rad (for small-angle T0 measurement)
+period_zero_cycles: 14.0
+
+# ---------- Timing ----------
+physics_dt: 0.004167       # 1/240 s
+render_every_n: 6
+warmup_seconds: 0.0
+
+# ---------- Visual ----------
+pivot_world: [0.0, 0.0, 0.80]
+rod_draw_width: 0.018
+rod_draw_depth: 0.018
+bob_draw_size: 0.048
+pivot_draw_size: 0.05
+floor_z: -0.24
+
+# ---------- Display ----------
+headless: false

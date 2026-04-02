@@ -111,6 +111,11 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const [exp7PostV2, setExp7PostV2] = useState(0);
   const exp7AllDone = exp7Trials.length >= 4;
 
+  // ── Exp2: report generation state ──
+  const isExp2 = config.experimentNumber === '2';
+  const [exp2Progress, setExp2Progress] = useState<string>('');
+  const [exp2ReportData, setExp2ReportData] = useState<any>(null);
+
   // ── Generic experiment state ──
   const [controlValues, setControlValues] = useState<Record<string, number>>(() => {
     const v: Record<string, number> = {};
@@ -171,8 +176,16 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       }
     });
     const unsub2 = isaacService.onSimulationState(setSimState);
+    const unsub3 = isaacService.onCustomMessage((msg: any) => {
+      if (msg.type === 'exp2_progress' && msg.data) {
+        setExp2Progress(`${msg.data.phase} (${msg.data.current}/${msg.data.total})`);
+      } else if (msg.type === 'exp2_report_ready' && msg.data) {
+        setExp2ReportData(msg.data);
+        setExp2Progress('Report ready!');
+      }
+    });
     const poll = setInterval(() => { if (isaacService.isConnected()) isaacService.requestSimulationState(); }, 3000);
-    return () => { unsub1(); unsub2(); clearInterval(poll); };
+    return () => { unsub1(); unsub2(); unsub3(); clearInterval(poll); };
   }, [config.id, config.experimentNumber]);
 
   // ── Spin countdown ──
@@ -1087,6 +1100,90 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               })}
             </div>
           </div>
+
+          {/* Exp2 Report Status & Downloads */}
+          {isExp2 && (exp2Progress || exp2ReportData) && (
+            <div className="border-b border-gray-200 p-3">
+              {exp2Progress && !exp2ReportData && (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-[10px] font-mono text-amber-600">{exp2Progress}</div>
+                </div>
+              )}
+              {exp2ReportData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-green-600">Report Generated</div>
+                  <div className="text-[9px] font-mono text-gray-600 grid grid-cols-2 gap-1">
+                    <span>T₀ theory: <b>{exp2ReportData.T0_theory?.toFixed(4)} s</b></span>
+                    <span>T₀ measured: <b>{exp2ReportData.T0_measured?.toFixed(4)} s</b></span>
+                    <span>Sweep: <b>{exp2ReportData.sweep_points} points</b></span>
+                  </div>
+                  {exp2ReportData.plots?.overlay && (
+                    <img src={exp2ReportData.plots.overlay} alt="Overlay" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp2ReportData.plots?.period && (
+                    <img src={exp2ReportData.plots.period} alt="Period" className="w-full rounded border border-gray-200" />
+                  )}
+                  <div className="flex flex-wrap gap-1">
+                    {exp2ReportData.zip_b64 && (
+                      <button onClick={() => {
+                        const bin = atob(exp2ReportData.zip_b64);
+                        const arr = new Uint8Array(bin.length);
+                        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                        const blob = new Blob([arr], {type: 'application/zip'});
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob); a.download = 'Expt2_Large_Amplitude_Pendulum.zip'; a.click();
+                        URL.revokeObjectURL(a.href);
+                      }} className="px-2 py-1.5 text-[10px] font-mono font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm">
+                        <Download size={10} className="inline mr-1" />Download All (ZIP)
+                      </button>
+                    )}
+                    {exp2ReportData.report_md && (
+                      <button onClick={() => {
+                        const bin = atob(exp2ReportData.report_md);
+                        const blob = new Blob([bin], {type: 'text/markdown'});
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob); a.download = 'Expt2_Report.md'; a.click();
+                        URL.revokeObjectURL(a.href);
+                      }} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
+                        <FileText size={10} className="inline mr-1" />Report
+                      </button>
+                    )}
+                    {exp2ReportData.period_csv && (
+                      <button onClick={() => {
+                        const bin = atob(exp2ReportData.period_csv);
+                        const blob = new Blob([bin], {type: 'text/csv'});
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob); a.download = 'period_summary.csv'; a.click();
+                        URL.revokeObjectURL(a.href);
+                      }} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />CSV
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Extra Metrics */}
+          {config.extraMetrics && config.extraMetrics.length > 0 && latestData.current && (
+            <div className="border-b border-gray-200 p-3">
+              <div className="text-[10px] font-bold mb-1.5 uppercase tracking-wider text-gray-600">Metrics</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {config.extraMetrics.map(m => (
+                  <div key={m.key} className="rounded-lg border border-gray-200 p-1.5 bg-gray-50">
+                    <div className="text-[8px] font-mono uppercase tracking-wider text-gray-500">{m.label}</div>
+                    <div className="text-[11px] font-mono font-bold" style={{ color: m.color }}>
+                      {typeof (latestData.current as any)?.[m.key] === 'number'
+                        ? ((latestData.current as any)[m.key] as number).toFixed(4)
+                        : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Chart */}
           <div className="flex-1 p-2 flex flex-col min-h-0">

@@ -108,7 +108,7 @@ Browser → `frontend/` → WebSocket → `core/webrtc_server.py` → Isaac Sim 
 | # | Name | Web | Batch | Status |
 |---|------|-----|-------|--------|
 | 1 | Angular Momentum | ✅ | ✅ | Full |
-| 2 | Large Pendulum | ✅ | - | Full |
+| 2 | Large Pendulum | ✅ | ✅ | Full (procedural RK4 + batch sweep) |
 | 3 | Ballistic Pendulum | 🔒 | - | Stub |
 | 4 | Driven Damped | 🔒 | - | Stub |
 | 5 | Rotational Inertia | 🔒 | - | Stub |

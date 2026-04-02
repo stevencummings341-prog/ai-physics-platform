@@ -15,6 +15,7 @@ class IsaacService {
   private subscribers: ((data: TelemetryData) => void)[] = [];
   private sceneInfoSubscribers: ((info: any) => void)[] = [];
   private simStateSubscribers: ((state: SimulationState) => void)[] = [];
+  private customMessageSubscribers: ((msg: any) => void)[] = [];
 
   public ws: WebSocket | null = null;
   private useMock: boolean = false;
@@ -77,6 +78,8 @@ class IsaacService {
               console.log('Command result:', payload);
             } else if (payload.type === 'error') {
               console.error('Server error:', payload.message);
+            } else if (payload.type === 'exp2_progress' || payload.type === 'exp2_report_ready') {
+              this.customMessageSubscribers.forEach(cb => cb(payload));
             }
           } catch (e) {
             console.error('Failed to parse message', e);
@@ -161,6 +164,13 @@ class IsaacService {
 
   private notifySimStateSubscribers(state: SimulationState) {
     this.simStateSubscribers.forEach(cb => cb(state));
+  }
+
+  public onCustomMessage(callback: (msg: any) => void) {
+    this.customMessageSubscribers.push(callback);
+    return () => {
+      this.customMessageSubscribers = this.customMessageSubscribers.filter(cb => cb !== callback);
+    };
   }
 
   // --- USD 场景操作方法 ---

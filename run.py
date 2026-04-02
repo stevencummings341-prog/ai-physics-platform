@@ -24,6 +24,7 @@ log = logging.getLogger("run")
 
 EXPERIMENT_REGISTRY: dict[str, str] = {
     "expt1_angular_momentum": "experiments.expt1_angular_momentum.sim",
+    "expt2_large_pendulum": "experiments.expt2_large_pendulum.sim",
     "expt7_momentum": "experiments.expt7_momentum.sim",
 }
 

@@ -50,9 +50,13 @@ from configs.server import (
     EXP1_DISK_PATH, EXP1_RING_PATH,
     EXP1_DEFAULT_DISK_MASS, EXP1_DEFAULT_RING_MASS,
     EXP1_DEFAULT_INITIAL_VELOCITY,
-    EXP2_GROUP_PATH, EXP2_CYLINDER_PATH,
-    EXP2_MASS1_PATH, EXP2_MASS2_PATH,
-    EXP2_DEFAULT_INITIAL_ANGLE, EXP2_DEFAULT_MASS1, EXP2_DEFAULT_MASS2,
+    EXP2_PHYSICS_DT, EXP2_RENDER_EVERY_N,
+    EXP2_ROD_LENGTH, EXP2_ROD_MASS,
+    EXP2_DEFAULT_BOB_MASS1, EXP2_DEFAULT_BOB_MASS2,
+    EXP2_DEFAULT_R1, EXP2_DEFAULT_R2,
+    EXP2_DEFAULT_DAMPING, EXP2_DEFAULT_AMPLITUDE,
+    EXP2_PIVOT_POS, EXP2_ROD_DRAW_WIDTH, EXP2_ROD_DRAW_DEPTH,
+    EXP2_BOB_DRAW_SIZE, EXP2_PIVOT_DRAW_SIZE, EXP2_FLOOR_Z,
     REPLICATOR_INIT_MAX_RETRIES, CAMERA_SCRIPT_DIR,
     EXP7_CART1_PATH, EXP7_CART2_PATH, EXP7_GROUND_PATH, EXP7_MATERIAL_PATH,
     EXP7_DEFAULT_MASS1, EXP7_DEFAULT_MASS2,
@@ -474,10 +478,29 @@ class WebRTCServer:
         self.exp1_drop_offset = 0.0
         self.exp1_I_final_actual = 0.0
 
-        # Experiment 2 — large-amplitude pendulum
-        self.exp2_initial_angle = EXP2_DEFAULT_INITIAL_ANGLE
-        self.exp2_mass1 = EXP2_DEFAULT_MASS1
-        self.exp2_mass2 = EXP2_DEFAULT_MASS2
+        # Experiment 2 — large-amplitude pendulum (procedural RK4)
+        self.exp2_amplitude = EXP2_DEFAULT_AMPLITUDE
+        self.exp2_damping = EXP2_DEFAULT_DAMPING
+        self.exp2_bob_mass1 = EXP2_DEFAULT_BOB_MASS1
+        self.exp2_bob_mass2 = EXP2_DEFAULT_BOB_MASS2
+        self.exp2_r1 = EXP2_DEFAULT_R1
+        self.exp2_r2 = EXP2_DEFAULT_R2
+        self.exp2_theta = 0.0
+        self.exp2_omega = 0.0
+        self.exp2_alpha = 0.0
+        self.exp2_sim_time = 0.0
+        self.exp2_phase = "idle"            # idle → running → stopped
+        self.exp2_measured_period = 0.0
+        self.exp2_period_samples: list = []
+        self.exp2_pos_zero_crossings: list = []
+        self.exp2_prev_theta_sign = 1
+        self.exp2_scene_built = False
+        self.exp2_rotate_op = None          # USD RotateXYZOp handle
+        self.exp2_world = None              # isaacsim World for rendering
+        self.exp2_sim_task: Optional[asyncio.Task] = None
+        self._exp2_props: Dict[str, float] = {}
+        self._exp2_T0: float = 0.0
+        self._exp2_recompute_props()
 
         # Experiment 3 — ballistic pendulum
         self.exp3_projectile_mass = 0.05
@@ -522,12 +545,6 @@ class WebRTCServer:
         self._exp_params: Dict[str, Dict[str, float]] = {}
 
         self.current_experiment = "1"
-        self.exp2_angle_history: list = []
-        self.exp2_last_peak_time = None
-        self.exp2_period = 0.0
-        self.exp2_period_samples: list = []
-        self.exp2_zero_cross_times: list = []
-        self.exp2_last_angle_sign = None
 
         self._dc_interface = None
 
@@ -597,29 +614,28 @@ class WebRTCServer:
         if experiment_id == "7":
             await self._setup_exp7_scene()
             return web.Response(text=json.dumps({"status": "ok"}))
+        if experiment_id == "2":
+            await self._setup_exp2_scene()
+            return web.Response(text=json.dumps({"status": "ok"}))
         usd_path = p.get("usd_path")
         if not usd_path:
             project_root = _PROJECT_ROOT
             experiment_stage_paths = {
                 "1": os.path.join(project_root, "Experiment", "exp1", "exp1.usd"),
-                "2": os.path.join(project_root, "Experiment", "exp2", "exp2.usd"),
             }
             usd_path = experiment_stage_paths.get(experiment_id, DEFAULT_USD_PATH)
         ok = omni.usd.get_context().open_stage(usd_path)
         if ok:
             self.simulation_control_enabled = False
             omni.timeline.get_timeline_interface().stop()
-            if experiment_id == "2":
-                await self._apply_exp2_params()
-            else:
-                await self._apply_exp1_params()
+            await self._apply_exp1_params()
             return web.Response(text=json.dumps({"status": "ok"}))
         return web.Response(status=500, text="Failed to load USD")
 
     # --- WebSocket handler --------------------------------------------------
 
     async def websocket_handler(self, request):
-        ws = web.WebSocketResponse()
+        ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
         self.ws_clients.add(ws)
         await ws.send_json({"type": "connected", "message": "WebSocket connected to Isaac Sim"})
@@ -639,6 +655,8 @@ class WebRTCServer:
         if mtype == "start_simulation":
             if self.current_experiment == "7":
                 await self._start_exp7_collision()
+            elif self.current_experiment == "2":
+                await self._start_exp2_sim()
             else:
                 if not getattr(self, "_has_started", False):
                     if self.current_experiment == "1":
@@ -648,13 +666,14 @@ class WebRTCServer:
                 tl.play()
 
         elif mtype == "stop_simulation":
+            if self.current_experiment == "2":
+                self.exp2_phase = "stopped"
             self.simulation_control_enabled = False
             tl.stop()
 
         elif mtype == "reset":
             self.simulation_control_enabled = False
             self._has_started = False
-            self._reset_exp2_state()
             if self.current_experiment == "1":
                 self.exp1_phase = "idle"
                 self.exp1_omega_before_drop = 0.0
@@ -664,6 +683,9 @@ class WebRTCServer:
                 self.exp1_ke_initial = 0.0
                 self.exp1_ke_final = 0.0
                 self.exp1_drop_offset = 0.0
+            elif self.current_experiment == "2":
+                self._reset_exp2_state()
+                self._exp2_update_pose(0.0)
             elif self.current_experiment == "7":
                 await self._reset_exp7()
             tl.stop()
@@ -701,12 +723,14 @@ class WebRTCServer:
             if exp_id == "7":
                 await self._setup_exp7_scene()
                 await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
+            elif exp_id == "2":
+                await self._setup_exp2_scene()
+                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
             else:
                 usd_path = data.get("usd_path")
                 if not usd_path:
                     exp_stage = {
                         "1": os.path.join(_PROJECT_ROOT, "Experiment", "exp1", "exp1.usd"),
-                        "2": os.path.join(_PROJECT_ROOT, "Experiment", "exp2", "exp2.usd"),
                     }
                     usd_path = exp_stage.get(exp_id, DEFAULT_USD_PATH)
                 carb.log_warn(f"Loading USD: {usd_path}")
@@ -719,16 +743,18 @@ class WebRTCServer:
         elif mtype == "enter_experiment":
             exp_id = data.get("experiment_id", "1")
             self.current_experiment = exp_id
-            self._reset_exp2_state()
             self._cam_deferred_done = False
-            if exp_id == "7":
+            if exp_id == "2":
+                self._reset_exp2_state()
+                await self._setup_exp2_scene()
+            elif exp_id == "7":
                 await self._setup_exp7_scene()
             await self._switch_camera(exp_id)
             if exp_id == "1":
                 await self._apply_exp1_params()
                 asyncio.ensure_future(self._deferred_camera_readjust())
             elif exp_id == "2":
-                await self._apply_exp2_params()
+                asyncio.ensure_future(self._deferred_exp2_camera())
             await ws.send_json({"type": "experiment_entered", "experiment_id": exp_id})
 
         elif mtype == "switch_camera":
@@ -754,19 +780,12 @@ class WebRTCServer:
         elif mtype == "set_initial_velocity":
             self.exp1_initial_vel = float(data.get("value", 5.0))
 
-        elif mtype == "set_initial_angle":
-            self.exp2_initial_angle = float(data.get("value", 90.0))
-            await self._apply_exp2_params()
-        elif mtype == "set_exp2_mass1":
-            self.exp2_mass1 = float(data.get("value", 1.0))
-            await self._apply_exp2_params()
-        elif mtype == "set_exp2_mass2":
-            self.exp2_mass2 = float(data.get("value", 1.0))
-            await self._apply_exp2_params()
-        elif mtype == "set_exp2_offset1":
-            self._store_param("3", "offset1", data)
-        elif mtype == "set_exp2_offset2":
-            self._store_param("3", "offset2", data)
+        elif mtype == "set_exp2_amplitude":
+            self.exp2_amplitude = float(data.get("value", EXP2_DEFAULT_AMPLITUDE))
+        elif mtype == "set_exp2_damping":
+            self.exp2_damping = float(data.get("value", EXP2_DEFAULT_DAMPING))
+        elif mtype == "run_exp2_full_experiment":
+            asyncio.ensure_future(self._run_exp2_full_experiment(ws))
 
         # Experiment 3 — ballistic pendulum
         elif mtype == "set_projectile_mass":
@@ -823,12 +842,370 @@ class WebRTCServer:
     # --- Helpers -----------------------------------------------------------
 
     def _reset_exp2_state(self):
-        self.exp2_angle_history = []
-        self.exp2_last_peak_time = None
-        self.exp2_period = 0.0
+        if self.exp2_sim_task and not self.exp2_sim_task.done():
+            self.exp2_sim_task.cancel()
+            self.exp2_sim_task = None
+        self.exp2_theta = 0.0
+        self.exp2_omega = 0.0
+        self.exp2_alpha = 0.0
+        self.exp2_sim_time = 0.0
+        self.exp2_phase = "idle"
+        self.exp2_measured_period = 0.0
         self.exp2_period_samples = []
-        self.exp2_zero_cross_times = []
-        self.exp2_last_angle_sign = None
+        self.exp2_pos_zero_crossings = []
+        self.exp2_prev_theta_sign = 1
+
+    # --- Experiment 2 RK4 pendulum physics -----------------------------------
+
+    def _exp2_recompute_props(self):
+        """Compute physical pendulum properties from current mass/geometry."""
+        m_rod = EXP2_ROD_MASS
+        L = EXP2_ROD_LENGTH
+        m1 = self.exp2_bob_mass1
+        m2 = self.exp2_bob_mass2
+        r1 = self.exp2_r1
+        r2 = self.exp2_r2
+        m_total = m_rod + m1 + m2
+        d = (m1 * r1 - m2 * r2) / m_total
+        I_rod = (1.0 / 12.0) * m_rod * L ** 2
+        I = I_rod + m1 * r1 ** 2 + m2 * r2 ** 2
+        self._exp2_props = {"m_total": m_total, "d": d, "I": I}
+        self._exp2_T0 = 2.0 * np.pi * np.sqrt(I / (m_total * 9.81 * d)) if d > 0 else 0.0
+
+    def _exp2_period_series(self, amplitude_rad: float, n_terms: int = 5) -> float:
+        """Large-amplitude period via elliptic integral series expansion."""
+        k2 = np.sin(amplitude_rad / 2.0) ** 2
+        coeffs = [1.0, 1.0 / 4.0, 9.0 / 64.0, 25.0 / 256.0, 1225.0 / 16384.0]
+        value = sum(coeffs[i] * (k2 ** i) for i in range(min(n_terms, len(coeffs))))
+        return self._exp2_T0 * value
+
+    def _exp2_pendulum_rhs(self, theta: float, omega: float):
+        """Return (d_theta/dt, d_omega/dt) for the damped compound pendulum."""
+        I = self._exp2_props["I"]
+        m_total = self._exp2_props["m_total"]
+        d = self._exp2_props["d"]
+        alpha = -(self.exp2_damping / I) * omega - (m_total * 9.81 * d / I) * np.sin(theta)
+        return omega, alpha
+
+    def _exp2_rk4_step(self, theta: float, omega: float, dt: float):
+        """Single RK4 integration step; returns (theta_new, omega_new, alpha_new)."""
+        k1t, k1o = self._exp2_pendulum_rhs(theta, omega)
+        k2t, k2o = self._exp2_pendulum_rhs(theta + 0.5 * dt * k1t, omega + 0.5 * dt * k1o)
+        k3t, k3o = self._exp2_pendulum_rhs(theta + 0.5 * dt * k2t, omega + 0.5 * dt * k2o)
+        k4t, k4o = self._exp2_pendulum_rhs(theta + dt * k3t, omega + dt * k3o)
+        theta_new = theta + (dt / 6.0) * (k1t + 2 * k2t + 2 * k3t + k4t)
+        omega_new = omega + (dt / 6.0) * (k1o + 2 * k2o + 2 * k3o + k4o)
+        _, alpha_new = self._exp2_pendulum_rhs(theta_new, omega_new)
+        return theta_new, omega_new, alpha_new
+
+    def _exp2_update_pose(self, theta: float):
+        """Set the USD Xform rotation to reflect current angle."""
+        if self.exp2_rotate_op is not None:
+            try:
+                self.exp2_rotate_op.Set(Gf.Vec3f(0.0, float(np.degrees(theta)), 0.0))
+            except Exception:
+                pass
+
+    async def _setup_exp2_scene(self):
+        """Build the pendulum scene with classmate's exact visual layout.
+
+        Uses the same approach as exp7 (direct UsdGeom — no World object)
+        which is proven to work with the WebRTC frame-capture pipeline.
+        All visual parameters (sizes, colours, positions, DomeLight) are
+        identical to expt2_large_amplitude_pendulum_sim_fixed.py.
+        """
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp2: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(0.0)
+
+            UsdLux.DomeLight.Define(stage, "/World/DomeLight").CreateIntensityAttr(1200.0)
+
+            fz = EXP2_FLOOR_Z
+            pv = np.array(EXP2_PIVOT_POS)
+            r1 = self.exp2_r1
+            r2 = self.exp2_r2
+
+            # ---- Grid floor (classmate add_grid_floor lines 63-110) ----
+            self._exp2_make_box(stage, "/World/GridFloorBase",
+                                np.array([0, 0, fz]), np.array([8, 8, 0.02]),
+                                np.array([0.12, 0.12, 0.14]))
+            for i, x in enumerate(np.arange(-5.0, 5.01, 0.5)):
+                self._exp2_make_box(stage, f"/World/GridLineX_{i}",
+                                    np.array([float(x), 0, fz + 0.011]),
+                                    np.array([0.01, 10, 0.002]),
+                                    np.array([0.85, 0.85, 0.85]))
+            for i, y in enumerate(np.arange(-5.0, 5.01, 0.5)):
+                self._exp2_make_box(stage, f"/World/GridLineY_{i}",
+                                    np.array([0, float(y), fz + 0.011]),
+                                    np.array([10, 0.01, 0.002]),
+                                    np.array([0.85, 0.85, 0.85]))
+            self._exp2_make_box(stage, "/World/GridAxisX",
+                                np.array([0, 0, fz + 0.012]),
+                                np.array([10, 0.04, 0.004]),
+                                np.array([0.95, 0.25, 0.25]))
+            self._exp2_make_box(stage, "/World/GridAxisY",
+                                np.array([0, 0, fz + 0.012]),
+                                np.array([0.04, 10, 0.004]),
+                                np.array([0.25, 0.55, 0.95]))
+
+            # ---- VisualPendulum (classmate lines 206-255) ----
+            self._exp2_make_box(stage, "/World/PivotMarker",
+                                pv, np.array([EXP2_PIVOT_DRAW_SIZE] * 3),
+                                np.array([1.0, 1.0, 0.0]))
+
+            pendulum = UsdGeom.Xform.Define(stage, "/World/Pendulum")
+            translate_op = pendulum.AddTranslateOp()
+            self.exp2_rotate_op = pendulum.AddRotateXYZOp()
+            translate_op.Set(Gf.Vec3d(float(pv[0]), float(pv[1]), float(pv[2])))
+            self.exp2_rotate_op.Set(Gf.Vec3f(0, 0, 0))
+
+            rod_center = np.array([0, 0, 0.5 * (-r1 + r2)])
+            rod_vis_len = r1 + r2
+            self._exp2_make_box(stage, "/World/Pendulum/Rod",
+                                rod_center,
+                                np.array([EXP2_ROD_DRAW_WIDTH, EXP2_ROD_DRAW_DEPTH, rod_vis_len]),
+                                np.array([0.92, 0.92, 0.95]))
+            self._exp2_make_box(stage, "/World/Pendulum/Bob1",
+                                np.array([0, 0, -r1]),
+                                np.array([EXP2_BOB_DRAW_SIZE] * 3),
+                                np.array([1.0, 0.18, 0.18]))
+            self._exp2_make_box(stage, "/World/Pendulum/Bob2",
+                                np.array([0, 0, r2]),
+                                np.array([EXP2_BOB_DRAW_SIZE] * 3),
+                                np.array([0.18, 0.45, 1.0]))
+
+            self.exp2_world = None
+            self.exp2_scene_built = True
+            self._reset_exp2_state()
+
+            for _ in range(10):
+                await app.next_update_async()
+
+            self._force_exp2_camera(stage)
+            carb.log_warn("exp2: scene built (classmate layout, UsdGeom)")
+        except Exception as exc:
+            carb.log_error(f"_setup_exp2_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    @staticmethod
+    def _exp2_make_box(stage, path, position, scale, color):
+        """Classmate's exact _make_box (line 245-252)."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(position[0]), float(position[1]), float(position[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+
+    async def _start_exp2_sim(self):
+        """Start the RK4 simulation loop for exp2."""
+        if self.exp2_sim_task and not self.exp2_sim_task.done():
+            self.exp2_sim_task.cancel()
+
+        self._exp2_recompute_props()
+        self.exp2_theta = self.exp2_amplitude
+        self.exp2_omega = 0.0
+        _, self.exp2_alpha = self._exp2_pendulum_rhs(self.exp2_theta, 0.0)
+        self.exp2_sim_time = 0.0
+        self.exp2_measured_period = 0.0
+        self.exp2_period_samples = []
+        self.exp2_pos_zero_crossings = []
+        self.exp2_prev_theta_sign = 1 if self.exp2_theta >= 0 else -1
+        self.exp2_phase = "running"
+
+        self._exp2_update_pose(self.exp2_theta)
+        tl = omni.timeline.get_timeline_interface()
+        tl.play()
+
+        self.exp2_sim_task = asyncio.ensure_future(self._run_exp2_physics_loop())
+
+    async def _run_exp2_physics_loop(self):
+        """RK4 physics loop with Kit-native rendering (same pattern as exp7).
+
+        Every 6 RK4 sub-steps we yield one Kit frame via
+        app.next_update_async(), which triggers a viewport render that
+        the WebRTC track captures.  6 steps × ~60 fps ≈ 360 Hz physics.
+        """
+        dt = EXP2_PHYSICS_DT
+        render_n = EXP2_RENDER_EVERY_N
+        app = omni.kit.app.get_app()
+
+        try:
+            while self.exp2_phase == "running":
+                for _ in range(render_n):
+                    self.exp2_theta, self.exp2_omega, self.exp2_alpha = (
+                        self._exp2_rk4_step(self.exp2_theta, self.exp2_omega, dt)
+                    )
+                    self.exp2_sim_time += dt
+
+                    curr_sign = 1 if self.exp2_theta >= 0 else -1
+                    if curr_sign > 0 and self.exp2_prev_theta_sign <= 0:
+                        self.exp2_pos_zero_crossings.append(self.exp2_sim_time)
+                        if len(self.exp2_pos_zero_crossings) >= 2:
+                            latest_p = (self.exp2_pos_zero_crossings[-1]
+                                        - self.exp2_pos_zero_crossings[-2])
+                            if 0.3 < latest_p < 10.0:
+                                self.exp2_period_samples.append(latest_p)
+                                if len(self.exp2_period_samples) > 5:
+                                    self.exp2_period_samples.pop(0)
+                                self.exp2_measured_period = (
+                                    sum(self.exp2_period_samples)
+                                    / len(self.exp2_period_samples)
+                                )
+                    self.exp2_prev_theta_sign = curr_sign
+
+                self._exp2_update_pose(self.exp2_theta)
+                await app.next_update_async()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            carb.log_error(f"_run_exp2_physics_loop: {exc}")
+
+    async def _run_exp2_full_experiment(self, ws):
+        """Run the complete experiment, generate all outputs, send as base64 for
+        direct browser download (works behind SSH tunnels / firewalls)."""
+        try:
+            import base64
+            import pandas as pd
+            from core.exp2_analysis import (
+                compute_pendulum_properties, theoretical_T0, period_series,
+                simulate_pure_rk4, measure_period_zero,
+                measure_period_two_cycles_zero_cross,
+                save_three_curve_plot, save_overlay_plot,
+                save_period_comparison_plot, save_error_plot,
+                generate_pendulum_report,
+            )
+            import shutil
+            from datetime import datetime
+
+            self._exp2_recompute_props()
+            cfg = {
+                "rod_mass": EXP2_ROD_MASS, "rod_length": EXP2_ROD_LENGTH,
+                "bob_mass_1": self.exp2_bob_mass1, "bob_mass_2": self.exp2_bob_mass2,
+                "r1": self.exp2_r1, "r2": self.exp2_r2,
+            }
+            props = compute_pendulum_properties(cfg)
+            T0 = theoretical_T0(props)
+            damping = self.exp2_damping
+            dt = EXP2_PHYSICS_DT
+            small_amp, large_amp = 0.20, 2.80
+            amp_start, amp_end, amp_step = 0.20, 2.40, 0.20
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join(_PROJECT_ROOT, "outputs", f"expt2_web_{ts}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            async def progress(name, num, total):
+                if not ws.closed:
+                    await ws.send_json({"type": "exp2_progress", "data": {
+                        "phase": name, "current": num, "total": total}})
+
+            await progress("Small amplitude simulation", 1, 5)
+            small_df = simulate_pure_rk4(props, small_amp, damping, dt, 4.0, T0)
+            small_df.to_csv(os.path.join(out_dir, "small_amp.csv"), index=False)
+            save_three_curve_plot(small_df, f"Small-Amplitude (A0={small_amp:.2f} rad)",
+                                  os.path.join(out_dir, "small_amp_plot.png"))
+            await asyncio.sleep(0.01)
+
+            await progress("Large amplitude simulation", 2, 5)
+            large_df = simulate_pure_rk4(props, large_amp, damping, dt, 4.0, T0)
+            large_df.to_csv(os.path.join(out_dir, "large_amp.csv"), index=False)
+            save_three_curve_plot(large_df, f"Large-Amplitude (A0={large_amp:.2f} rad)",
+                                  os.path.join(out_dir, "large_amp_plot.png"))
+            save_overlay_plot(small_df, large_df, small_amp, large_amp,
+                              os.path.join(out_dir, "small_vs_large_theta.png"))
+            await asyncio.sleep(0.01)
+
+            await progress("Period-zero measurement", 3, 5)
+            pz_df = simulate_pure_rk4(props, 0.10, damping, dt, 14.0, T0)
+            pz_df.to_csv(os.path.join(out_dir, "period_zero.csv"), index=False)
+            T0_measured, amp_mid = measure_period_zero(pz_df)
+            await asyncio.sleep(0.01)
+
+            await progress("Amplitude sweep", 4, 5)
+            amps = np.arange(amp_start, amp_end + 1e-12, amp_step)
+            rows = []
+            for A in amps:
+                df = simulate_pure_rk4(props, float(A), damping, dt, 3.5, T0)
+                df.to_csv(os.path.join(out_dir, f"amp_{A:.2f}_timeseries.csv"), index=False)
+                T_meas, A_meas = measure_period_two_cycles_zero_cross(df)
+                rows.append({
+                    "amp_set": A, "amp_measured": A_meas,
+                    "period_measured": T_meas, "T0_theory": T0,
+                    "T0_measured_from_period_zero": T0_measured,
+                    "T_series_2term": period_series(T0, A_meas, 2) if np.isfinite(A_meas) else np.nan,
+                    "T_series_3term": period_series(T0, A_meas, 3) if np.isfinite(A_meas) else np.nan,
+                    "T_series_4term": period_series(T0, A_meas, 4) if np.isfinite(A_meas) else np.nan,
+                    "T_series_5term": period_series(T0, A_meas, 5) if np.isfinite(A_meas) else np.nan,
+                })
+            summary_df = pd.DataFrame(rows)
+            summary_df.to_csv(os.path.join(out_dir, "period_summary.csv"), index=False)
+            save_period_comparison_plot(summary_df, os.path.join(out_dir, "period_vs_amplitude.png"))
+            save_error_plot(summary_df, os.path.join(out_dir, "small_angle_error.png"))
+            await asyncio.sleep(0.01)
+
+            await progress("Generating report & packaging", 5, 5)
+            report_path = generate_pendulum_report(
+                out_dir, props, T0, damping,
+                small_amp, large_amp, amp_start, amp_end, amp_step, dt,
+                summary_df, T0_measured, amp_mid,
+            )
+            import zipfile
+            zip_path = out_dir + ".zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname in os.listdir(out_dir):
+                    if fname.startswith("amp_") and fname.endswith("_timeseries.csv"):
+                        continue
+                    if fname == "period_zero.csv":
+                        continue
+                    zf.write(os.path.join(out_dir, fname), fname)
+
+            def _read_b64(fpath):
+                with open(fpath, "rb") as f:
+                    return base64.b64encode(f.read()).decode("ascii")
+
+            result_data = {
+                "T0_theory": round(T0, 6),
+                "T0_measured": round(float(T0_measured), 6),
+                "sweep_points": len(rows),
+                "plots": {
+                    "overlay": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "small_vs_large_theta.png")),
+                    "period": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "period_vs_amplitude.png")),
+                    "error": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "small_angle_error.png")),
+                    "small_amp": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "small_amp_plot.png")),
+                    "large_amp": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "large_amp_plot.png")),
+                },
+                "report_md": _read_b64(report_path),
+                "period_csv": _read_b64(os.path.join(out_dir, "period_summary.csv")),
+                "zip_b64": _read_b64(zip_path),
+            }
+
+            if not ws.closed:
+                await ws.send_json({"type": "exp2_report_ready", "data": result_data})
+            self._exp2_update_pose(0.0)
+            carb.log_warn(f"exp2: full experiment complete → {out_dir}")
+
+        except Exception as exc:
+            carb.log_error(f"_run_exp2_full_experiment: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+            if not ws.closed:
+                await ws.send_json({"type": "exp2_progress", "data": {
+                    "phase": f"Error: {exc}", "current": 0, "total": 0}})
 
     def _store_param(self, exp_id: str, key: str, data: dict):
         """Store a generic parameter for experiments that don't need immediate USD apply."""
@@ -933,7 +1310,7 @@ class WebRTCServer:
                 focal = 18.0
             else:
                 presets = {
-                    "2": (Gf.Vec3d(1.17, 5.39, 2.55), Gf.Vec3d(0, 5, 2), 18.0),
+                    "2": (WebRTCServer._EXP2_CAM_EYE, WebRTCServer._EXP2_CAM_TGT, WebRTCServer._EXP2_CAM_FL),
                     "3": (Gf.Vec3d(-0.5, 6.8, 3.2), Gf.Vec3d(0, 6, 2.5), 18.0),
                     "7": (Gf.Vec3d(0.0, -1.6, 0.6), Gf.Vec3d(0, 0, 0.0), 24.0),
                 }
@@ -1000,6 +1377,50 @@ class WebRTCServer:
             self.camera_controller.set_from_eye_target(eye, target)
         except Exception as exc:
             carb.log_error(f"Deferred camera: {exc}")
+
+    _EXP2_CAM_EYE = Gf.Vec3d(1.5, 3.5, 2.0)
+    _EXP2_CAM_TGT = Gf.Vec3d(0, 0, 0.30)
+    _EXP2_CAM_FL = 15.0
+
+    def _force_exp2_camera(self, stage=None):
+        """Set exp2 camera using every available method."""
+        eye = self._EXP2_CAM_EYE
+        tgt = self._EXP2_CAM_TGT
+        fl = self._EXP2_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+            carb.log_warn(f"exp2 camera forced: eye={eye} tgt={tgt} fl={fl}")
+        except Exception as exc:
+            carb.log_error(f"_force_exp2_camera: {exc}")
+
+    async def _deferred_exp2_camera(self):
+        """Re-apply exp2 camera at 1s, 2s, and 4s after enter to beat
+        Isaac Sim's async stage-init camera resets."""
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "2":
+                return
+            self._force_exp2_camera()
+            carb.log_warn(f"exp2 deferred camera at +{delay}s")
 
     async def _set_initial_angular_velocity(self):
         try:
@@ -1082,28 +1503,8 @@ class WebRTCServer:
             carb.log_error(f"drop_ring_or_disk: {exc}")
 
     async def _apply_exp2_params(self):
-        try:
-            stage = omni.usd.get_context().get_stage()
-            if not stage:
-                return
-            tl = omni.timeline.get_timeline_interface()
-            was_playing = tl.is_playing()
-            if was_playing:
-                tl.stop()
-                await asyncio.sleep(0.1)
-            grp = stage.GetPrimAtPath(EXP2_GROUP_PATH)
-            if grp and grp.IsValid():
-                xf = UsdGeom.Xformable(grp)
-                xf.ClearXformOpOrder()
-                xf.AddRotateYOp().Set(float(self.exp2_initial_angle))
-            for path, mass in [(EXP2_MASS1_PATH, self.exp2_mass1), (EXP2_MASS2_PATH, self.exp2_mass2)]:
-                prim = stage.GetPrimAtPath(path)
-                if prim and prim.IsValid():
-                    if not prim.HasAPI(UsdPhysics.MassAPI):
-                        UsdPhysics.MassAPI.Apply(prim)
-                    UsdPhysics.MassAPI(prim).GetMassAttr().Set(float(mass))
-        except Exception as exc:
-            carb.log_error(f"apply_exp2_params: {exc}")
+        """No-op kept for backward compat; exp2 is now procedural RK4."""
+        pass
 
     # --- Angular velocity read-back ----------------------------------------
 
@@ -1130,41 +1531,8 @@ class WebRTCServer:
         return disk_vel, ring_vel
 
     def _get_exp2_angle(self):
-        try:
-            from omni.isaac.core.prims import RigidPrim
-            from scipy.spatial.transform import Rotation as R
-            rp = RigidPrim(EXP2_CYLINDER_PATH)
-            _, orientation = rp.get_world_pose()
-            if orientation is not None:
-                q = [float(orientation[i]) for i in range(4)]
-                euler = R.from_quat(q).as_euler("xyz", degrees=True)
-                a = float(euler[1])
-                while a > 180:
-                    a -= 360
-                while a < -180:
-                    a += 360
-                return a
-        except Exception:
-            pass
-        return 0.0
-
-    def _calculate_exp2_period(self, angle, t):
-        sign = 1 if angle >= 0 else -1
-        if self.exp2_last_angle_sign is not None and sign != self.exp2_last_angle_sign:
-            cross_type = self.exp2_last_angle_sign
-            self.exp2_zero_cross_times.append((t, cross_type))
-            cutoff = t - 10.0
-            self.exp2_zero_cross_times = [(tt, ct) for tt, ct in self.exp2_zero_cross_times if tt >= cutoff]
-            same = [(tt, ct) for tt, ct in self.exp2_zero_cross_times if ct == cross_type]
-            if len(same) >= 2:
-                period = same[-1][0] - same[-2][0]
-                if 0.3 < period < 10.0:
-                    self.exp2_period_samples.append(period)
-                    if len(self.exp2_period_samples) > 3:
-                        self.exp2_period_samples.pop(0)
-                    self.exp2_period = sum(self.exp2_period_samples) / len(self.exp2_period_samples)
-        self.exp2_last_angle_sign = sign
-        return self.exp2_period
+        """Legacy shim — angle is now computed by RK4, not read from USD."""
+        return np.degrees(self.exp2_theta)
 
     # --- Physics readback helpers for exp3-8 --------------------------------
 
@@ -1595,18 +1963,21 @@ class WebRTCServer:
                             "ke_loss_percent": round(ke_loss_pct, 2),
                         }}
                     elif self.current_experiment == "2":
-                        angle = period = 0.0
-                        if tl.is_playing():
-                            angle = self._get_exp2_angle()
-                            period = self._calculate_exp2_period(angle, now)
+                        theta_deg = round(np.degrees(self.exp2_theta), 3)
+                        T_series = self._exp2_period_series(self.exp2_amplitude, 5) if self.exp2_amplitude > 0.01 else self._exp2_T0
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "angle": round(angle, 2),
-                            "period": round(period, 2),
-                            "initial_angle": self.exp2_initial_angle,
-                            "mass1": self.exp2_mass1,
-                            "mass2": self.exp2_mass2,
-                            "is_running": tl.is_playing(),
+                            "theta": theta_deg,
+                            "omega": round(self.exp2_omega, 4),
+                            "alpha": round(self.exp2_alpha, 4),
+                            "period": round(self.exp2_measured_period, 4),
+                            "T0_theory": round(self._exp2_T0, 4),
+                            "T_series": round(T_series, 4),
+                            "amplitude_deg": round(np.degrees(self.exp2_amplitude), 1),
+                            "damping": self.exp2_damping,
+                            "sim_time": round(self.exp2_sim_time, 3),
+                            "phase": self.exp2_phase,
+                            "is_running": self.exp2_phase == "running",
                         }}
                     elif self.current_experiment == "3":
                         msg = {"type": "telemetry", "data": {
@@ -1724,6 +2095,10 @@ class WebRTCServer:
         app.router.add_post("/camera", self.camera_control)
         app.router.add_post("/load_usd", self.load_usd)
         app.router.add_get("/video_feed", self.video_feed_handler)
+
+        outputs_dir = os.path.join(_PROJECT_ROOT, "outputs")
+        os.makedirs(outputs_dir, exist_ok=True)
+        app.router.add_static("/outputs", outputs_dir, show_index=True)
 
         async def _cors_options(r):
             return web.Response(headers={

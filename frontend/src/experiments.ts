@@ -25,27 +25,27 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-02-large-pendulum',
     title: 'Large Amplitude Pendulum',
-    description: 'Investigate pendulum motion at large angles beyond small-angle approximation.',
+    description: 'Investigate pendulum motion at large angles beyond the small-angle approximation. Uses RK4 integration for a physical compound pendulum with two bobs. Compare measured period with series-expansion theory.',
     thumbnail: 'https://picsum.photos/seed/pendulum/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '2',
     difficulty: 'Easy',
     isLocked: false,
     controls: [
-      { id: 'initial_angle', label: 'Initial Angle (°)', type: 'slider', min: 10, max: 170, step: 5, defaultValue: 90, command: 'set_initial_angle' },
-      { id: 'mass1', label: 'Cylinder_01 Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_exp2_mass1' },
-      { id: 'mass2', label: 'Cylinder_02 Mass (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_exp2_mass2' },
-      { id: 'mass_offset1', label: 'Cylinder_01 Distance (m)', type: 'slider', min: 0.2, max: 0.8, step: 0.01, defaultValue: 0.8, command: 'set_exp2_offset1' },
-      { id: 'mass_offset2', label: 'Cylinder_02 Distance (m)', type: 'slider', min: 0.2, max: 0.8, step: 0.01, defaultValue: 0.8, command: 'set_exp2_offset2' },
-      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset_env' }
+      { id: 'amplitude', label: 'Initial Amplitude (rad)', type: 'slider', min: 0.10, max: 2.80, step: 0.05, defaultValue: 0.35, command: 'set_exp2_amplitude' },
+      { id: 'damping', label: 'Damping Coefficient', type: 'slider', min: 0.0, max: 0.02, step: 0.0005, defaultValue: 0.0025, command: 'set_exp2_damping' },
+      { id: 'run', label: 'Run Pendulum', type: 'button', command: 'start_simulation' },
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' },
+      { id: 'full_experiment', label: 'Generate Full Report', type: 'button', command: 'run_exp2_full_experiment' }
     ],
     chartConfig: [
-      { key: 'angle', color: '#ff00ff', label: 'Angle (°)', yAxisId: 'left' }
+      { key: 'theta', color: '#8b5cf6', label: 'θ (°)', yAxisId: 'left' },
+      { key: 'omega', color: '#3b82f6', label: 'ω (rad/s)', yAxisId: 'right' },
     ],
-    // 额外的数值显示（不在图表中，但在顶部显示）
     extraMetrics: [
-      { key: 'period', label: 'Period (s)', color: '#00ff00' }
+      { key: 'period', label: 'Measured T (s)', color: '#10b981' },
+      { key: 'T0_theory', label: 'T₀ theory (s)', color: '#f59e0b' },
+      { key: 'T_series', label: 'T series (s)', color: '#ef4444' }
     ]
   },
   {

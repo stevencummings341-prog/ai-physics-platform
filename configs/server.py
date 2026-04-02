@@ -54,15 +54,23 @@ EXP1_DEFAULT_DISK_MASS = 1.0
 EXP1_DEFAULT_RING_MASS = 1.0
 EXP1_DEFAULT_INITIAL_VELOCITY = 0.0
 
-# Experiment 2 — large-amplitude pendulum
-EXP2_GROUP_PATH = "/World/exp2/Group_01"
-EXP2_CYLINDER_PATH = "/World/exp2/Group_01/Cylinder"
-EXP2_REVOLUTE_JOINT_PATH = "/World/exp2/Group_01/RevoluteJoint"
-EXP2_MASS1_PATH = "/World/exp2/Group_01/Cylinder_01"
-EXP2_MASS2_PATH = "/World/exp2/Group_01/Cylinder_02"
-EXP2_DEFAULT_INITIAL_ANGLE = 90
-EXP2_DEFAULT_MASS1 = 1.0
-EXP2_DEFAULT_MASS2 = 1.0
+# Experiment 2 — large-amplitude pendulum (procedural RK4 visual pendulum)
+EXP2_PHYSICS_DT = 1.0 / 240.0
+EXP2_RENDER_EVERY_N = 6
+EXP2_ROD_LENGTH = 0.35           # m
+EXP2_ROD_MASS = 0.028            # kg
+EXP2_DEFAULT_BOB_MASS1 = 0.075   # kg (lower bob, red)
+EXP2_DEFAULT_BOB_MASS2 = 0.075   # kg (upper bob, blue)
+EXP2_DEFAULT_R1 = 0.175          # m (pivot → bob1 distance)
+EXP2_DEFAULT_R2 = 0.145          # m (pivot → bob2 distance)
+EXP2_DEFAULT_DAMPING = 0.0025    # angular damping coefficient
+EXP2_DEFAULT_AMPLITUDE = 0.35    # rad (initial amplitude)
+EXP2_PIVOT_POS = (0.0, 0.0, 0.80)
+EXP2_ROD_DRAW_WIDTH = 0.018
+EXP2_ROD_DRAW_DEPTH = 0.018
+EXP2_BOB_DRAW_SIZE = 0.048
+EXP2_PIVOT_DRAW_SIZE = 0.05
+EXP2_FLOOR_Z = -0.24
 
 # Experiment 7 — momentum conservation (two-cart collision)
 EXP7_CART1_PATH = "/World/exp7/cart1"

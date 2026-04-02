@@ -35,8 +35,8 @@
       "status": "implemented",
       "web_ui": true,
       "server_telemetry": "full",
-      "batch_mode": false,
-      "notes": "Fully functional via senior's WebRTC server code"
+      "batch_mode": true,
+      "notes": "Procedural RK4 VisualPendulum (no PhysX joints). Classmate code integrated: full θ/ω/α telemetry, period detection via zero-crossing, series expansion comparison, batch mode with multi-phase sweep + Markdown report."
     },
     "expt3_ballistic_pendulum": {
       "status": "stub",
