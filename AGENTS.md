@@ -113,7 +113,7 @@ Browser → `frontend/` → WebSocket → `core/webrtc_server.py` → Isaac Sim 
 | 4 | Driven Damped | 🔒 | - | Stub |
 | 5 | Rotational Inertia | 🔒 | - | Stub |
 | 6 | Centripetal Force | 🔒 | - | Stub |
-| 7 | Momentum Conservation | ✅ | ✅ | Server needs wiring |
+| 7 | Momentum Conservation | ✅ | ✅ | Full (procedural scene + telemetry) |
 | 8 | Resonance Air Column | 🔒 | - | Stub |
 
 🔒 = UI exists but locked; server handler is placeholder.

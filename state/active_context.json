@@ -66,9 +66,9 @@
     "expt7_momentum": {
       "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
+      "server_telemetry": "full",
       "batch_mode": true,
-      "notes": "Batch sim.py exists; web server handler is stub — needs USD prim path wiring"
+      "notes": "Full web interactive: procedural scene, 4-trial state machine, per-cart telemetry, collision detection, PDF report. Integrated from classmate code."
     },
     "expt8_resonance": {
       "status": "stub",

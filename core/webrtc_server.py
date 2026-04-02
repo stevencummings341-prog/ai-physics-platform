@@ -33,7 +33,7 @@ import omni.ext
 import omni.kit.viewport.utility as vp_util
 import omni.usd
 import omni.timeline
-from pxr import Gf, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdPhysics, UsdShade, PhysxSchema
 
 # ---------------------------------------------------------------------------
 # Locate project root and import our unified config
@@ -54,6 +54,11 @@ from configs.server import (
     EXP2_MASS1_PATH, EXP2_MASS2_PATH,
     EXP2_DEFAULT_INITIAL_ANGLE, EXP2_DEFAULT_MASS1, EXP2_DEFAULT_MASS2,
     REPLICATOR_INIT_MAX_RETRIES, CAMERA_SCRIPT_DIR,
+    EXP7_CART1_PATH, EXP7_CART2_PATH, EXP7_GROUND_PATH, EXP7_MATERIAL_PATH,
+    EXP7_DEFAULT_MASS1, EXP7_DEFAULT_MASS2,
+    EXP7_DEFAULT_V1, EXP7_DEFAULT_V2, EXP7_DEFAULT_RESTITUTION,
+    EXP7_CART_SIZE, EXP7_CART1_INIT_POS, EXP7_CART2_INIT_POS,
+    EXP7_WARMUP_SECONDS, EXP7_SOLVER_POS_ITERS, EXP7_SOLVER_VEL_ITERS,
 )
 
 # WebRTC dependencies (optional — graceful degradation)
@@ -491,11 +496,23 @@ class WebRTCServer:
         self.exp6_radius = 0.3
         self.exp6_angular_velocity = 5.0
 
-        # Experiment 7 — momentum conservation
-        self.exp7_mass1 = 1.0
-        self.exp7_mass2 = 1.0
-        self.exp7_velocity1 = 5.0
-        self.exp7_elasticity = 1.0
+        # Experiment 7 — momentum conservation (two-cart collision)
+        self.exp7_mass1 = EXP7_DEFAULT_MASS1
+        self.exp7_mass2 = EXP7_DEFAULT_MASS2
+        self.exp7_v1 = EXP7_DEFAULT_V1
+        self.exp7_v2 = EXP7_DEFAULT_V2
+        self.exp7_restitution = EXP7_DEFAULT_RESTITUTION
+        self.exp7_phase = "idle"           # idle → warmup → running → settled
+        self.exp7_scene_built = False
+        self.exp7_pre_v1 = 0.0
+        self.exp7_pre_v2 = 0.0
+        self.exp7_post_v1 = 0.0
+        self.exp7_post_v2 = 0.0
+        self.exp7_prev_v1: Optional[float] = None
+        self.exp7_prev_v2: Optional[float] = None
+        self.exp7_collision_time = 0.0
+        self.exp7_collision_detected = False
+        self.exp7_deadline = 0.0           # auto-settle timestamp
 
         # Experiment 8 — resonance in air column
         self.exp8_length = 50.0
@@ -577,11 +594,11 @@ class WebRTCServer:
     async def load_usd(self, request):
         p = await request.json()
         experiment_id = str(p.get("experiment_id", "")).strip()
+        if experiment_id == "7":
+            await self._setup_exp7_scene()
+            return web.Response(text=json.dumps({"status": "ok"}))
         usd_path = p.get("usd_path")
         if not usd_path:
-            # Prefer experiment-specific USD files when available. The unified
-            # exp.usd currently contains broken references for several authored
-            # assets, so exp1/exp2 should load their dedicated stage files.
             project_root = _PROJECT_ROOT
             experiment_stage_paths = {
                 "1": os.path.join(project_root, "Experiment", "exp1", "exp1.usd"),
@@ -620,12 +637,15 @@ class WebRTCServer:
         tl = omni.timeline.get_timeline_interface()
 
         if mtype == "start_simulation":
-            if not getattr(self, "_has_started", False):
-                if self.current_experiment == "1":
-                    await self._set_initial_angular_velocity()
-                self._has_started = True
-            self.simulation_control_enabled = True
-            tl.play()
+            if self.current_experiment == "7":
+                await self._start_exp7_collision()
+            else:
+                if not getattr(self, "_has_started", False):
+                    if self.current_experiment == "1":
+                        await self._set_initial_angular_velocity()
+                    self._has_started = True
+                self.simulation_control_enabled = True
+                tl.play()
 
         elif mtype == "stop_simulation":
             self.simulation_control_enabled = False
@@ -644,6 +664,8 @@ class WebRTCServer:
                 self.exp1_ke_initial = 0.0
                 self.exp1_ke_final = 0.0
                 self.exp1_drop_offset = 0.0
+            elif self.current_experiment == "7":
+                await self._reset_exp7()
             tl.stop()
             tl.set_current_time(0.0)
             tl.stop()
@@ -676,25 +698,31 @@ class WebRTCServer:
 
         elif mtype == "load_usd":
             exp_id = str(data.get("experiment_id", "1")).strip()
-            usd_path = data.get("usd_path")
-            if not usd_path:
-                exp_stage = {
-                    "1": os.path.join(_PROJECT_ROOT, "Experiment", "exp1", "exp1.usd"),
-                    "2": os.path.join(_PROJECT_ROOT, "Experiment", "exp2", "exp2.usd"),
-                }
-                usd_path = exp_stage.get(exp_id, DEFAULT_USD_PATH)
-            carb.log_warn(f"Loading USD: {usd_path}")
-            ok = omni.usd.get_context().open_stage(usd_path)
-            if ok:
-                self.simulation_control_enabled = False
-                tl.stop()
-            await ws.send_json({"type": "usd_loaded", "success": ok, "path": usd_path})
+            if exp_id == "7":
+                await self._setup_exp7_scene()
+                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
+            else:
+                usd_path = data.get("usd_path")
+                if not usd_path:
+                    exp_stage = {
+                        "1": os.path.join(_PROJECT_ROOT, "Experiment", "exp1", "exp1.usd"),
+                        "2": os.path.join(_PROJECT_ROOT, "Experiment", "exp2", "exp2.usd"),
+                    }
+                    usd_path = exp_stage.get(exp_id, DEFAULT_USD_PATH)
+                carb.log_warn(f"Loading USD: {usd_path}")
+                ok = omni.usd.get_context().open_stage(usd_path)
+                if ok:
+                    self.simulation_control_enabled = False
+                    tl.stop()
+                await ws.send_json({"type": "usd_loaded", "success": ok, "path": usd_path})
 
         elif mtype == "enter_experiment":
             exp_id = data.get("experiment_id", "1")
             self.current_experiment = exp_id
             self._reset_exp2_state()
             self._cam_deferred_done = False
+            if exp_id == "7":
+                await self._setup_exp7_scene()
             await self._switch_camera(exp_id)
             if exp_id == "1":
                 await self._apply_exp1_params()
@@ -772,15 +800,21 @@ class WebRTCServer:
 
         # Experiment 7 — momentum conservation
         elif mtype == "set_mass1":
-            self.exp7_mass1 = float(data.get("value", 1.0))
-            await self._apply_mass_at("/World/exp7/cart1", self.exp7_mass1)
+            self.exp7_mass1 = float(data.get("value", EXP7_DEFAULT_MASS1))
+            if self.exp7_scene_built:
+                await self._apply_mass_at(EXP7_CART1_PATH, self.exp7_mass1)
         elif mtype == "set_mass2":
-            self.exp7_mass2 = float(data.get("value", 1.0))
-            await self._apply_mass_at("/World/exp7/cart2", self.exp7_mass2)
+            self.exp7_mass2 = float(data.get("value", EXP7_DEFAULT_MASS2))
+            if self.exp7_scene_built:
+                await self._apply_mass_at(EXP7_CART2_PATH, self.exp7_mass2)
         elif mtype == "set_velocity1":
-            self.exp7_velocity1 = float(data.get("value", 5.0))
+            self.exp7_v1 = float(data.get("value", EXP7_DEFAULT_V1))
+        elif mtype == "set_velocity2":
+            self.exp7_v2 = float(data.get("value", EXP7_DEFAULT_V2))
         elif mtype == "set_elasticity":
-            self.exp7_elasticity = float(data.get("value", 1.0))
+            self.exp7_restitution = float(data.get("value", EXP7_DEFAULT_RESTITUTION))
+            if self.exp7_scene_built:
+                await self._update_exp7_restitution()
 
         # Experiment 8 — resonance in air column
         elif mtype == "set_length":
@@ -901,6 +935,7 @@ class WebRTCServer:
                 presets = {
                     "2": (Gf.Vec3d(1.17, 5.39, 2.55), Gf.Vec3d(0, 5, 2), 18.0),
                     "3": (Gf.Vec3d(-0.5, 6.8, 3.2), Gf.Vec3d(0, 6, 2.5), 18.0),
+                    "7": (Gf.Vec3d(0.0, -1.6, 0.6), Gf.Vec3d(0, 0, 0.0), 24.0),
                 }
                 if experiment_id in presets:
                     eye, target, focal = presets[experiment_id]
@@ -1169,14 +1204,323 @@ class WebRTCServer:
 
     def _read_total_momentum(self) -> float:
         """Sum of momenta for two-cart collision (exp7)."""
-        v1 = self._read_velocity("/World/exp7/cart1")
-        v2 = self._read_velocity("/World/exp7/cart2")
-        return round(self.exp7_mass1 * v1 + self.exp7_mass2 * v2, 2)
+        v1 = self._read_exp7_vx(EXP7_CART1_PATH)
+        v2 = self._read_exp7_vx(EXP7_CART2_PATH)
+        return round(self.exp7_mass1 * v1 + self.exp7_mass2 * v2, 4)
 
     def _read_total_ke(self) -> float:
-        ke1 = self._read_kinetic_energy("/World/exp7/cart1", self.exp7_mass1)
-        ke2 = self._read_kinetic_energy("/World/exp7/cart2", self.exp7_mass2)
-        return round(ke1 + ke2, 2)
+        v1 = self._read_exp7_vx(EXP7_CART1_PATH)
+        v2 = self._read_exp7_vx(EXP7_CART2_PATH)
+        return round(0.5 * self.exp7_mass1 * v1 * v1 + 0.5 * self.exp7_mass2 * v2 * v2, 4)
+
+    # --- Experiment 7 — full scene builder & collision logic ----------------
+
+    def _read_exp7_vx(self, prim_path: str) -> float:
+        """Read x-component of linear velocity for a rigid body."""
+        try:
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(prim_path)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_linear_velocity(h)
+                if v:
+                    return float(v[0])
+        except Exception:
+            pass
+        return 0.0
+
+    def _read_exp7_px(self, prim_path: str) -> float:
+        """Read x-position of a prim."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return 0.0
+            prim = stage.GetPrimAtPath(prim_path)
+            if prim and prim.IsValid():
+                xf = UsdGeom.Xformable(prim)
+                mtx = xf.ComputeLocalToWorldTransform(0)
+                return float(mtx.ExtractTranslation()[0])
+        except Exception:
+            pass
+        return 0.0
+
+    async def _setup_exp7_scene(self):
+        """Build the momentum-conservation scene from scratch (ground + 2 carts)."""
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp7: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, "/World/exp7")
+
+            # Physics scene — zero gravity: models a leveled frictionless track
+            # where the normal force exactly cancels gravity.
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(0.0)
+
+            # Dome light
+            light = UsdLux.DomeLight.Define(stage, "/World/exp7/DomeLight")
+            light.CreateIntensityAttr(1500.0)
+
+            # Ground — visual only (no CollisionAPI; carts float with zero-g)
+            self._create_exp7_visual(
+                stage, EXP7_GROUND_PATH,
+                pos=(0, 0, -0.01), scale=(4.0, 1.0, 0.02),
+                color=(0.15, 0.15, 0.18),
+            )
+
+            # Track visual strip
+            self._create_exp7_visual(
+                stage, "/World/exp7/track",
+                pos=(0, 0, 0.002), scale=(3.0, 0.12, 0.004),
+                color=(0.25, 0.25, 0.30),
+            )
+
+            # Cart 1 (red)
+            self._create_exp7_cart(
+                stage, EXP7_CART1_PATH,
+                pos=EXP7_CART1_INIT_POS, mass=self.exp7_mass1,
+                color=(1.0, 0.15, 0.15),
+            )
+            # Cart 2 (blue)
+            self._create_exp7_cart(
+                stage, EXP7_CART2_PATH,
+                pos=EXP7_CART2_INIT_POS, mass=self.exp7_mass2,
+                color=(0.15, 0.45, 1.0),
+            )
+
+            # Physics material (frictionless, configurable restitution)
+            self._create_exp7_material(stage, self.exp7_restitution)
+
+            # Bind material to carts only (ground is visual-only)
+            mat = stage.GetPrimAtPath(EXP7_MATERIAL_PATH)
+            for path in [EXP7_CART1_PATH, EXP7_CART2_PATH]:
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid() and mat and mat.IsValid():
+                    if not prim.HasAPI(UsdShade.MaterialBindingAPI):
+                        UsdShade.MaterialBindingAPI.Apply(prim)
+                    UsdShade.MaterialBindingAPI(prim).Bind(
+                        UsdShade.Material(mat),
+                    )
+
+            self.exp7_scene_built = True
+            self.exp7_phase = "idle"
+            self.exp7_collision_detected = False
+            carb.log_warn("exp7: scene built successfully")
+
+            for _ in range(5):
+                await app.next_update_async()
+        except Exception as exc:
+            carb.log_error(f"_setup_exp7_scene: {exc}")
+            import traceback
+            tracb = traceback.format_exc()
+            carb.log_error(tracb)
+
+    @staticmethod
+    def _create_exp7_visual(stage, path: str, pos: tuple, scale: tuple, color: tuple):
+        """Create a purely visual cube — no collision, no rigid body."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+    def _create_exp7_cart(
+        self, stage, path: str, pos: tuple, mass: float, color: tuple,
+    ):
+        """Create a dynamic cuboid with full PhysX settings for accurate 1D collisions."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*EXP7_CART_SIZE))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+        prim = cube.GetPrim()
+
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+
+        UsdPhysics.MassAPI.Apply(prim)
+        UsdPhysics.MassAPI(prim).CreateMassAttr().Set(float(mass))
+
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateEnableCCDAttr(True)
+        rb.CreateSolverPositionIterationCountAttr(EXP7_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP7_SOLVER_VEL_ITERS)
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(100.0)
+        rb.CreateSleepThresholdAttr(0.0)
+
+        col = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+        col.CreateContactOffsetAttr(0.002)
+        col.CreateRestOffsetAttr(0.0)
+
+    def _create_exp7_material(self, stage, restitution: float):
+        """Create / update the frictionless physics material for exp7."""
+        mat_prim = stage.GetPrimAtPath(EXP7_MATERIAL_PATH)
+        if mat_prim and mat_prim.IsValid():
+            api = UsdPhysics.MaterialAPI(mat_prim)
+            api.GetRestitutionAttr().Set(float(restitution))
+            return
+
+        mat = UsdShade.Material.Define(stage, EXP7_MATERIAL_PATH)
+        UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        api = UsdPhysics.MaterialAPI(mat.GetPrim())
+        api.CreateStaticFrictionAttr().Set(0.0)
+        api.CreateDynamicFrictionAttr().Set(0.0)
+        api.CreateRestitutionAttr().Set(float(restitution))
+
+        PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+        phx = PhysxSchema.PhysxMaterialAPI(mat.GetPrim())
+        phx.CreateFrictionCombineModeAttr().Set("min")
+        phx.CreateRestitutionCombineModeAttr().Set("max")
+
+    async def _update_exp7_restitution(self):
+        """Live-update the physics material restitution without rebuilding the scene."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            mat_prim = stage.GetPrimAtPath(EXP7_MATERIAL_PATH)
+            if mat_prim and mat_prim.IsValid():
+                UsdPhysics.MaterialAPI(mat_prim).GetRestitutionAttr().Set(
+                    float(self.exp7_restitution)
+                )
+        except Exception as exc:
+            carb.log_error(f"_update_exp7_restitution: {exc}")
+
+    async def _start_exp7_collision(self):
+        """Reset cart positions, warm up, then apply initial velocities."""
+        try:
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            if not self.exp7_scene_built:
+                await self._setup_exp7_scene()
+                stage = omni.usd.get_context().get_stage()
+
+            # Reset positions
+            for path, pos in [(EXP7_CART1_PATH, EXP7_CART1_INIT_POS),
+                               (EXP7_CART2_PATH, EXP7_CART2_INIT_POS)]:
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid():
+                    xf = UsdGeom.Xformable(prim)
+                    xf.ClearXformOpOrder()
+                    xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+                    xf.AddScaleOp().Set(Gf.Vec3f(*EXP7_CART_SIZE))
+
+            # Update masses & material
+            await self._apply_mass_at(EXP7_CART1_PATH, self.exp7_mass1)
+            await self._apply_mass_at(EXP7_CART2_PATH, self.exp7_mass2)
+            self._create_exp7_material(stage, self.exp7_restitution)
+
+            self.exp7_pre_v1 = self.exp7_v1
+            self.exp7_pre_v2 = self.exp7_v2
+            self.exp7_post_v1 = 0.0
+            self.exp7_post_v2 = 0.0
+            self.exp7_prev_v1 = None
+            self.exp7_prev_v2 = None
+            self.exp7_collision_detected = False
+            self.exp7_phase = "warmup"
+
+            # Play timeline; no settling needed (zero gravity)
+            self.simulation_control_enabled = True
+            tl.play()
+            await asyncio.sleep(EXP7_WARMUP_SECONDS)
+
+            # Zero out any residual motion, then apply clean X-only velocities
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            dc = self._dc_interface
+            for path, vel in [(EXP7_CART1_PATH, self.exp7_v1),
+                               (EXP7_CART2_PATH, self.exp7_v2)]:
+                h = dc.get_rigid_body(path)
+                if h != _dynamic_control.INVALID_HANDLE:
+                    dc.set_rigid_body_linear_velocity(h, (vel, 0.0, 0.0))
+                    dc.set_rigid_body_angular_velocity(h, (0.0, 0.0, 0.0))
+
+            self.exp7_phase = "running"
+
+            # Deadline: auto-settle if no collision is detected in time.
+            # closing_speed > 0 means carts are approaching each other.
+            gap = abs(EXP7_CART2_INIT_POS[0] - EXP7_CART1_INIT_POS[0]) - EXP7_CART_SIZE[0]
+            closing_speed = self.exp7_v1 - self.exp7_v2
+            if closing_speed > 0.001:
+                t_impact = gap / closing_speed
+                self.exp7_deadline = time.time() + t_impact + 2.0
+            else:
+                self.exp7_deadline = time.time() + 3.0
+
+            carb.log_warn(
+                f"exp7: collision started  v1={self.exp7_v1} v2={self.exp7_v2} "
+                f"m1={self.exp7_mass1} m2={self.exp7_mass2} e={self.exp7_restitution} "
+                f"deadline_in={self.exp7_deadline - time.time():.1f}s"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp7_collision: {exc}")
+
+    async def _reset_exp7(self):
+        """Reset exp7 state for the next trial."""
+        self.exp7_phase = "idle"
+        self.exp7_collision_detected = False
+        self.exp7_prev_v1 = None
+        self.exp7_prev_v2 = None
+        self.exp7_post_v1 = 0.0
+        self.exp7_post_v2 = 0.0
+        self.exp7_deadline = 0.0
+
+    def _check_exp7_collision(self, v1: float, v2: float):
+        """Lightweight collision detector called every telemetry tick.
+
+        Two exit paths to "settled":
+          1. Normal: velocity spike detected → wait 0.4 s for settling → done.
+          2. Timeout: deadline exceeded (carts never collided) → capture
+             current velocities and move on so the UI is never stuck.
+        """
+        if self.exp7_phase != "running":
+            return
+
+        now = time.time()
+
+        # --- Path 2: deadline timeout (no collision possible / missed) ---
+        if now > self.exp7_deadline:
+            self.exp7_post_v1 = v1
+            self.exp7_post_v2 = v2
+            self.exp7_phase = "settled"
+            carb.log_warn("exp7: deadline reached — auto-settling (no collision detected)")
+            return
+
+        # --- Path 1: normal collision detection ---
+        if self.exp7_prev_v1 is not None:
+            dv1 = abs(v1 - self.exp7_prev_v1)
+            dv2 = abs(v2 - self.exp7_prev_v2)
+            if (dv1 + dv2) > 0.02:
+                self.exp7_collision_detected = True
+                self.exp7_collision_time = now
+        self.exp7_prev_v1 = v1
+        self.exp7_prev_v2 = v2
+
+        if self.exp7_collision_detected and now - self.exp7_collision_time > 0.4:
+            self.exp7_post_v1 = v1
+            self.exp7_post_v2 = v2
+            self.exp7_phase = "settled"
 
     # --- Telemetry loop ----------------------------------------------------
 
@@ -1294,11 +1638,35 @@ class WebRTCServer:
                             "is_running": tl.is_playing(),
                         }}
                     elif self.current_experiment == "7":
+                        v1x = self._read_exp7_vx(EXP7_CART1_PATH) if tl.is_playing() else 0.0
+                        v2x = self._read_exp7_vx(EXP7_CART2_PATH) if tl.is_playing() else 0.0
+                        if tl.is_playing():
+                            self._check_exp7_collision(v1x, v2x)
+                        p1 = self.exp7_mass1 * v1x
+                        p2 = self.exp7_mass2 * v2x
+                        ke1 = 0.5 * self.exp7_mass1 * v1x * v1x
+                        ke2 = 0.5 * self.exp7_mass2 * v2x * v2x
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "total_momentum": self._read_total_momentum(),
-                            "kinetic_energy": self._read_total_ke(),
+                            "v1": round(v1x, 4),
+                            "v2": round(v2x, 4),
+                            "p1": round(p1, 4),
+                            "p2": round(p2, 4),
+                            "p_total": round(p1 + p2, 4),
+                            "ke1": round(ke1, 4),
+                            "ke2": round(ke2, 4),
+                            "ke_total": round(ke1 + ke2, 4),
+                            "x1": round(self._read_exp7_px(EXP7_CART1_PATH), 4),
+                            "x2": round(self._read_exp7_px(EXP7_CART2_PATH), 4),
+                            "phase": self.exp7_phase,
                             "is_running": tl.is_playing(),
+                            "v1_initial": round(self.exp7_pre_v1, 4),
+                            "v2_initial": round(self.exp7_pre_v2, 4),
+                            "v1_final": round(self.exp7_post_v1, 4),
+                            "v2_final": round(self.exp7_post_v2, 4),
+                            "mass1": self.exp7_mass1,
+                            "mass2": self.exp7_mass2,
+                            "restitution": self.exp7_restitution,
                         }}
                     elif self.current_experiment == "8":
                         msg = {"type": "telemetry", "data": {

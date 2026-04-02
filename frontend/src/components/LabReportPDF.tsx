@@ -26,7 +26,7 @@ export interface TrialRow {
   iri: number; fri: number; iam: number; fam: number; pctDiff: number;
   initK: number; finalK: number; energyPct: number;
 }
-interface Props { phys: PhysConsts; iri: number; trials: TrialRow[] }
+interface Props { phys: PhysConsts; iri: number; trials: TrialRow[]; chartImages?: string[] }
 
 // ═══════════════════════════════════════════════════════════════════
 // Styles
@@ -93,7 +93,7 @@ const Hdr: React.FC = () => (
 // ═══════════════════════════════════════════════════════════════════
 // DOCUMENT
 // ═══════════════════════════════════════════════════════════════════
-const LabReportPDF: React.FC<Props> = ({ phys, iri, trials }) => {
+const LabReportPDF: React.FC<Props> = ({ phys, iri, trials, chartImages = [] }) => {
   const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   const I_d = 0.5 * phys.lowerDisk.mass * phys.lowerDisk.r ** 2;
   const I_p = 0.5 * phys.pulley.mass * phys.pulley.r ** 2;
@@ -636,11 +636,29 @@ const LabReportPDF: React.FC<Props> = ({ phys, iri, trials }) => {
 
 {/* ═══════════════════════════ SECTION 7 APPENDIX ═══════════════════════════ */}
   <Text style={S.h1}>7  Appendix</Text>
-  <Text style={S.body}>(Experimental graphs of angular speed change after each collision go here.)</Text>
-  <Text style={S.body}>Figure 5: The graph of angular speed change after ring collision 1.</Text>
-  <Text style={S.body}>Figure 6: The graph of angular speed change after ring collision 2.</Text>
-  <Text style={S.body}>Figure 7: The graph of angular speed change after ring collision 3.</Text>
-  <Text style={S.body}>Figure 8: The graph of angular speed change after disk collision.</Text>
+  <Text style={S.body}>
+    The following figures show the angular velocity vs. time graphs for each collision trial, as recorded by the physics engine during simulation. The collision point is marked on each graph.
+  </Text>
+
+  {trials.map((t, i) => {
+    const figNum = i + 5;
+    const objLabel = t.object === 'Ring' ? `ring collision (run ${t.trial})` : 'disk collision';
+    const imgSrc = chartImages[i];
+    return (
+      <View key={i} style={{ marginBottom: 16 }} wrap={false}>
+        {imgSrc ? (
+          <Image src={imgSrc} style={{ width: '100%', height: 220 }} />
+        ) : (
+          <View style={{ width: '100%', height: 80, backgroundColor: '#f5f5f5', justifyContent: 'center', alignItems: 'center' }}>
+            <Text style={{ fontSize: 10, color: '#999' }}>Chart data not available for this trial.</Text>
+          </View>
+        )}
+        <Text style={[S.caption, { textAlign: 'center', marginTop: 4 }]}>
+          Figure {figNum}: The graph of angular speed change after {objLabel}.
+        </Text>
+      </View>
+    );
+  })}
 
   <View style={{ marginTop: 30, borderTopWidth: 0.5, borderTopColor: '#aaa', paddingTop: 8 }}>
     <Text style={{ fontSize: 8, fontFamily: 'Times-Italic', color: '#888', textAlign: 'center' }}>

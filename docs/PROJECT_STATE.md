@@ -49,7 +49,7 @@ Build a full-stack physics experiment platform: Isaac Sim simulation backend + R
 | 4 | Driven Damped Oscillation | ✅ asset | ✅ locked | ✅ stub | ❌ |
 | 5 | Rotational Inertia | ✅ asset | ✅ locked | ✅ stub | ❌ |
 | 6 | Centripetal Force | ✅ asset | ✅ locked | ✅ stub | ❌ |
-| 7 | Momentum Conservation | ✅ asset | ✅ | ✅ stub | ✅ sim.py + analysis |
+| 7 | Momentum Conservation | ✅ procedural | ✅ full | ✅ full telemetry | ✅ sim.py + analysis |
 | 8 | Resonance Air Column | ✅ asset | ✅ locked | ✅ stub | ❌ |
 
 **"stub"** = WebSocket command handler exists, camera preset set, telemetry channel open; but USD prim paths may need adjustment once the experiment physics is built.

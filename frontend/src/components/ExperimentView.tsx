@@ -7,6 +7,9 @@ import WebRTCIsaacViewer from './WebRTCIsaacViewer';
 import { SERVER_CONFIG } from '../config';
 import { pdf } from '@react-pdf/renderer';
 import LabReportPDF from './LabReportPDF';
+import Exp7ReportPDF, { type Exp7Trial } from './Exp7ReportPDF';
+import { generateExp7Charts } from '../utils/exp7Charts';
+import { renderTrialChart } from '../utils/renderTrialChart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Module 1 — Hardcoded Physics Constants (g and cm)
@@ -51,6 +54,7 @@ interface TrialData {
   initK: number;
   finalK: number;
   energyPct: number;
+  chartData?: { t: number; omega: number }[];
 }
 
 interface ExperimentViewProps {
@@ -75,6 +79,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const latestData = useRef<TelemetryData | null>(null);
 
   const isExp1 = config.experimentNumber === '1';
+  const isExp7 = config.experimentNumber === '7';
   const isConnected = status === ConnectionStatus.CONNECTED;
 
   // ── Exp1: 4-trial state machine ──
@@ -92,6 +97,19 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const allDone = trials.length >= 4;
 
   const dropMass = selectedObject === 'Ring' ? ringMass : diskMass;
+
+  // ── Exp7: 4-trial state machine ──
+  const [exp7Trial, setExp7Trial] = useState(1);
+  const [exp7Phase, setExp7Phase] = useState<'idle' | 'running' | 'settled' | 'recorded'>('idle');
+  const [exp7Trials, setExp7Trials] = useState<Exp7Trial[]>([]);
+  const [exp7M1, setExp7M1] = useState(0.25);
+  const [exp7M2, setExp7M2] = useState(0.25);
+  const [exp7V1, setExp7V1] = useState(0.40);
+  const [exp7V2, setExp7V2] = useState(-0.40);
+  const [exp7Rest, setExp7Rest] = useState(1.0);
+  const [exp7PostV1, setExp7PostV1] = useState(0);
+  const [exp7PostV2, setExp7PostV2] = useState(0);
+  const exp7AllDone = exp7Trials.length >= 4;
 
   // ── Generic experiment state ──
   const [controlValues, setControlValues] = useState<Record<string, number>>(() => {
@@ -121,6 +139,13 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
             isaacService.sendCommand('set_drop_object', 'ring');
             isaacService.sendCommand('set_initial_velocity', 20);
           }
+          if (isExp7) {
+            isaacService.sendCommand('set_mass1', exp7M1);
+            isaacService.sendCommand('set_mass2', exp7M2);
+            isaacService.sendCommand('set_velocity1', exp7V1);
+            isaacService.sendCommand('set_velocity2', exp7V2);
+            isaacService.sendCommand('set_elasticity', exp7Rest);
+          }
           setTimeout(() => { isaacService.requestSimulationState(); setLoadingProgress(100); setTimeout(() => setIsLoading(false), 300); }, 500);
         } else { setErrorMessage('Failed to enter experiment.'); }
       } catch { setStatus(ConnectionStatus.ERROR); setErrorMessage('Init error.'); }
@@ -139,6 +164,11 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
         const next = [...prev, clamped];
         return next.length > 300 ? next.slice(-300) : next;
       });
+      if (isExp7 && data.phase === 'settled') {
+        setExp7PostV1(data.v1_final ?? data.v1 ?? 0);
+        setExp7PostV2(data.v2_final ?? data.v2 ?? 0);
+        setExp7Phase(prev => prev === 'running' ? 'settled' : prev);
+      }
     });
     const unsub2 = isaacService.onSimulationState(setSimState);
     const poll = setInterval(() => { if (isaacService.isConnected()) isaacService.requestSimulationState(); }, 3000);
@@ -192,6 +222,14 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     const finalK = 0.5 * fri * currentFAV * currentFAV;
     const energyPct = ((finalK - initK) / initK) * 100;
 
+    const t0 = dataHistory.length > 0 ? (dataHistory[0].timestamp ?? 0) : 0;
+    const chartSnapshot = dataHistory
+      .filter(d => d.disk_angular_velocity !== undefined)
+      .map(d => ({
+        t: +((((d.timestamp ?? 0) - t0) / 1000)).toFixed(3),
+        omega: +(Math.abs(d.disk_angular_velocity as number)).toFixed(4),
+      }));
+
     setTrials(prev => [...prev, {
       trial: trialNum,
       object: selectedObject,
@@ -199,9 +237,10 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       iav: omegaI, fav: currentFAV, x: currentOffset,
       iri: IRI, fri, iam, fam, pctDiff,
       initK, finalK, energyPct,
+      chartData: chartSnapshot,
     }]);
     setPhase('recorded');
-  }, [trialNum, omegaI, currentFAV, currentOffset, selectedObject, dropMass]);
+  }, [trialNum, omegaI, currentFAV, currentOffset, selectedObject, dropMass, dataHistory]);
 
   const handleNextTrial = useCallback(() => {
     isaacService.sendCommand('reset', {});
@@ -211,6 +250,81 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     setCurrentOffset(0);
     setDataHistory([]);
   }, []);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Module 2b — Exp7 4-Trial State Machine Actions
+  // ═══════════════════════════════════════════════════════════════════
+
+  const exp7HandleRun = useCallback(() => {
+    isaacService.sendCommand('set_mass1', exp7M1);
+    isaacService.sendCommand('set_mass2', exp7M2);
+    isaacService.sendCommand('set_velocity1', exp7V1);
+    isaacService.sendCommand('set_velocity2', exp7V2);
+    isaacService.sendCommand('set_elasticity', exp7Rest);
+    isaacService.startSimulation();
+    setExp7Phase('running');
+    setDataHistory([]);
+  }, [exp7M1, exp7M2, exp7V1, exp7V2, exp7Rest]);
+
+  const exp7HandleRecord = useCallback(() => {
+    const pBefore = exp7M1 * exp7V1 + exp7M2 * exp7V2;
+    const pAfter = exp7M1 * exp7PostV1 + exp7M2 * exp7PostV2;
+    const keBefore = 0.5 * exp7M1 * exp7V1 * exp7V1 + 0.5 * exp7M2 * exp7V2 * exp7V2;
+    const keAfter = 0.5 * exp7M1 * exp7PostV1 * exp7PostV1 + 0.5 * exp7M2 * exp7PostV2 * exp7PostV2;
+    const pPctDiff = pBefore !== 0 ? ((pAfter - pBefore) / Math.abs(pBefore)) * 100 : 0;
+    const keLossPct = keBefore > 0 ? ((keBefore - keAfter) / keBefore) * 100 : 0;
+    const collisionType = keLossPct < 5 ? 'elastic' : 'inelastic';
+
+    setExp7Trials(prev => [...prev, {
+      trial: exp7Trial,
+      m1: exp7M1, m2: exp7M2,
+      v1i: exp7V1, v2i: exp7V2,
+      restitution: exp7Rest,
+      v1f: exp7PostV1, v2f: exp7PostV2,
+      pBefore, pAfter, pPctDiff,
+      keBefore, keAfter, keLossPct,
+      collisionType,
+    }]);
+    setExp7Phase('recorded');
+  }, [exp7Trial, exp7M1, exp7M2, exp7V1, exp7V2, exp7Rest, exp7PostV1, exp7PostV2]);
+
+  const exp7HandleNext = useCallback(() => {
+    isaacService.sendCommand('reset', {});
+    setExp7Trial(prev => Math.min(prev + 1, 4));
+    setExp7Phase('idle');
+    setExp7PostV1(0);
+    setExp7PostV2(0);
+    setDataHistory([]);
+  }, []);
+
+  const exp7ExportCSV = useCallback(() => {
+    if (exp7Trials.length === 0) return;
+    const hdr = 'Trial,m1(kg),m2(kg),v1_i(m/s),v2_i(m/s),Restitution,v1_f(m/s),v2_f(m/s),p_before,p_after,%diff,KE_before,KE_after,KE_loss%,Type';
+    const rows = exp7Trials.map(t =>
+      [t.trial, t.m1.toFixed(2), t.m2.toFixed(2), t.v1i.toFixed(3), t.v2i.toFixed(3),
+       t.restitution.toFixed(2), t.v1f.toFixed(3), t.v2f.toFixed(3),
+       t.pBefore.toFixed(4), t.pAfter.toFixed(4), t.pPctDiff.toFixed(2),
+       t.keBefore.toFixed(4), t.keAfter.toFixed(4), t.keLossPct.toFixed(2), t.collisionType
+      ].join(',')
+    );
+    const blob = new Blob([[hdr, ...rows].join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `momentum_conservation_trials_${Date.now()}.csv`;
+    a.click();
+  }, [exp7Trials]);
+
+  const exp7GeneratePDF = useCallback(async () => {
+    if (exp7Trials.length === 0) { alert('Complete at least one trial first.'); return; }
+    const charts = generateExp7Charts(exp7Trials);
+    const blob = await pdf(<Exp7ReportPDF trials={exp7Trials} charts={charts} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Conservation_of_Momentum.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp7Trials]);
 
   // ═══════════════════════════════════════════════════════════════════
   // Module 3 — CSV Export
@@ -238,8 +352,21 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
 
   const generatePDF = useCallback(async () => {
     if (trials.length === 0) { alert('Complete at least one trial first.'); return; }
+
+    const chartImages: string[] = trials.map(t => {
+      if (!t.chartData || t.chartData.length < 4) return '';
+      const objLabel = t.object === 'Ring' ? 'Ring' : 'Disk';
+      const runLabel = t.object === 'Ring' ? ` (Run ${t.trial})` : '';
+      return renderTrialChart({
+        title: `Angular Speed Change After ${objLabel} Collision${runLabel}`,
+        data: t.chartData,
+        iav: t.iav,
+        fav: t.fav,
+      });
+    });
+
     const blob = await pdf(
-      <LabReportPDF phys={PHYS} iri={IRI} trials={trials} />
+      <LabReportPDF phys={PHYS} iri={IRI} trials={trials} chartImages={chartImages} />
     ).toBlob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -622,6 +749,274 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                 {phase === 'recorded' && trialNum < 4 && `Trial ${trialNum} saved. Click Next Trial to proceed.`}
                 {phase === 'recorded' && trialNum >= 4 && 'All 4 trials complete! Generate PDF report.'}
                 {allDone && phase === 'idle' && 'All 4 trials recorded. Click PDF Report to export.'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Experiment 7: Momentum Conservation — specialised 4-trial layout
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (isExp7) {
+    return (
+      <div className="h-screen w-full bg-gray-50 text-gray-900 flex flex-col font-sans overflow-hidden">
+        {/* Top Bar */}
+        <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white/90 backdrop-blur-sm z-20 shadow-sm shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="text-gray-700 hover:text-blue-600 flex items-center gap-1.5 text-xs font-mono border border-gray-300 px-2.5 py-1 rounded-lg">
+              <ArrowLeft size={12} /> BACK
+            </button>
+            <div className="h-5 w-px bg-gray-300" />
+            <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded-lg border">
+              Trial {Math.min(exp7Trial, 4)} / 4
+            </span>
+            <button onClick={exp7ExportCSV} disabled={exp7Trials.length === 0}
+              className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-mono rounded-lg flex items-center gap-1 border border-gray-300 disabled:opacity-40">
+              <Download size={11} /> CSV
+            </button>
+            <button onClick={exp7GeneratePDF} disabled={exp7Trials.length === 0}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono rounded-lg flex items-center gap-1 disabled:opacity-40">
+              <FileText size={11} /> PDF Report
+            </button>
+            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              {isConnected ? 'LIVE' : 'OFF'}
+            </div>
+          </div>
+        </div>
+
+        {/* Main Content */}
+        <div className="flex-1 flex overflow-hidden">
+
+          {/* Left Panel — controls */}
+          <div className="w-[280px] bg-white border-r border-gray-200 flex flex-col shrink-0 overflow-y-auto">
+            {/* Cart 1 */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-red-500 mb-2">Cart 1 (Red)</div>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Mass</span>
+                    <span className="font-bold text-red-600">{exp7M1.toFixed(2)} kg</span>
+                  </div>
+                  <input type="range" min={0.10} max={2.0} step={0.05} value={exp7M1}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp7M1(v); isaacService.sendCommand('set_mass1', v); }}
+                    disabled={exp7Phase !== 'idle'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-red-500 disabled:opacity-50" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Velocity</span>
+                    <span className="font-bold text-red-600">{exp7V1.toFixed(2)} m/s</span>
+                  </div>
+                  <input type="range" min={-2.0} max={2.0} step={0.05} value={exp7V1}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp7V1(v); isaacService.sendCommand('set_velocity1', v); }}
+                    disabled={exp7Phase !== 'idle'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-red-500 disabled:opacity-50" />
+                </div>
+              </div>
+            </div>
+
+            {/* Cart 2 */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-blue-500 mb-2">Cart 2 (Blue)</div>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Mass</span>
+                    <span className="font-bold text-blue-600">{exp7M2.toFixed(2)} kg</span>
+                  </div>
+                  <input type="range" min={0.10} max={2.0} step={0.05} value={exp7M2}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp7M2(v); isaacService.sendCommand('set_mass2', v); }}
+                    disabled={exp7Phase !== 'idle'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-50" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Velocity</span>
+                    <span className="font-bold text-blue-600">{exp7V2.toFixed(2)} m/s</span>
+                  </div>
+                  <input type="range" min={-2.0} max={2.0} step={0.05} value={exp7V2}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp7V2(v); isaacService.sendCommand('set_velocity2', v); }}
+                    disabled={exp7Phase !== 'idle'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500 disabled:opacity-50" />
+                </div>
+              </div>
+            </div>
+
+            {/* Restitution */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Coefficient of Restitution</div>
+              <div className="flex items-center gap-2 mb-1">
+                <input type="range" min={0} max={1} step={0.05} value={exp7Rest}
+                  onChange={e => { const v = parseFloat(e.target.value); setExp7Rest(v); isaacService.sendCommand('set_elasticity', v); }}
+                  disabled={exp7Phase !== 'idle'}
+                  className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-emerald-500 disabled:opacity-50" />
+                <span className="text-sm font-mono font-bold w-10 text-center">{exp7Rest.toFixed(2)}</span>
+              </div>
+              <div className="text-[9px] text-gray-400 font-mono text-center">
+                0 = perfectly inelastic &middot; 1 = elastic
+              </div>
+            </div>
+
+            {/* Current Trial Info */}
+            <div className="p-3 border-b border-gray-200 bg-gradient-to-b from-emerald-50/50 to-white">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Current Trial</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <InfoCard label="Trial" value={`${Math.min(exp7Trial, 4)} / 4`} accent="blue" />
+                <InfoCard label="Phase" value={exp7Phase.toUpperCase()} accent="green" />
+                <InfoCard label="p_total (before)" value={`${(exp7M1 * exp7V1 + exp7M2 * exp7V2).toFixed(4)}`} accent="cyan" />
+                {exp7Phase === 'settled' && (
+                  <>
+                    <InfoCard label="v1 (final)" value={`${exp7PostV1.toFixed(4)}`} accent="red" />
+                    <InfoCard label="v2 (final)" value={`${exp7PostV2.toFixed(4)}`} accent="blue" />
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Live Chart */}
+            <div className="flex-1 p-2 flex flex-col min-h-[160px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1 flex items-center gap-1">
+                <Activity size={10} /> Velocity
+              </div>
+              <div className="flex-1 w-full min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dataHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="timestamp" hide />
+                    <YAxis stroke="#6b7280" fontSize={9} tickFormatter={v => v.toFixed(2)} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', fontSize: '10px', borderRadius: '6px' }}
+                      labelStyle={{ display: 'none' }}
+                      formatter={(v: number) => v.toFixed(4)}
+                    />
+                    <Line type="monotone" dataKey="v1" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Cart 1 v" />
+                    <Line type="monotone" dataKey="v2" stroke="#3b82f6" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Cart 2 v" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* Center: Viewport + Bottom Panel */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* WebRTC Viewport */}
+            <div className="flex-1 relative bg-gray-900 min-h-0">
+              <div className="absolute inset-0">
+                <WebRTCIsaacViewer serverUrl={SERVER_CONFIG.httpUrl} usdPath={config.usdPath} className="w-full h-full" />
+              </div>
+            </div>
+
+            {/* Bottom Panel */}
+            <div className="h-auto max-h-[45%] bg-white border-t-2 border-gray-200 flex flex-col shrink-0">
+
+              {/* Action Bar */}
+              <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+                {/* Step Indicators */}
+                <div className="flex items-center gap-1">
+                  {(['idle', 'running', 'settled', 'recorded'] as const).map((step, i) => (
+                    <React.Fragment key={step}>
+                      {i > 0 && <div className={`w-4 h-0.5 rounded ${
+                        (['idle', 'running', 'settled', 'recorded'].indexOf(exp7Phase) >= i) ? 'bg-emerald-500' : 'bg-gray-300'
+                      }`} />}
+                      <div className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${
+                        exp7Phase === step ? 'bg-emerald-600 text-white' :
+                        (['idle', 'running', 'settled', 'recorded'].indexOf(exp7Phase) > i) ? 'bg-emerald-100 text-emerald-600' :
+                        'bg-gray-200 text-gray-400'
+                      }`}>
+                        {step === 'idle' ? 'Setup' : step === 'running' ? 'Colliding' : step === 'settled' ? 'Done' : 'Recorded'}
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+
+                <div className="h-5 w-px bg-gray-300" />
+                <span className="text-[10px] font-mono text-gray-600">
+                  e = <span className="font-bold text-gray-900">{exp7Rest.toFixed(2)}</span>
+                </span>
+
+                <div className="flex-1" />
+
+                {/* Action Buttons */}
+                <button onClick={exp7HandleRun} disabled={exp7Phase !== 'idle' || exp7AllDone}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  1. Run Collision
+                </button>
+                <button onClick={exp7HandleRecord} disabled={exp7Phase !== 'settled'}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  2. Record
+                </button>
+                {exp7Trial < 4 ? (
+                  <button onClick={exp7HandleNext} disabled={exp7Phase !== 'recorded'}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    3. Next Trial
+                  </button>
+                ) : (
+                  <button onClick={exp7GeneratePDF} disabled={exp7Phase !== 'recorded' && exp7Trials.length < 4}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-red-600 hover:bg-red-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    Generate PDF
+                  </button>
+                )}
+              </div>
+
+              {/* Trial Data Table */}
+              <div className="flex-1 overflow-auto px-4 py-2">
+                {exp7Trials.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-gray-400 text-sm font-mono">
+                    Set parameters &rarr; Run Collision &rarr; Record to log trial data
+                  </div>
+                ) : (
+                  <table className="w-full text-[10px] font-mono border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 sticky top-0">
+                        {['#', 'm1', 'm2', 'v1_i', 'v2_i', 'e', 'v1_f', 'v2_f', 'p_before', 'p_after', '%diff', 'KE_before', 'KE_after', 'KE_loss%', 'Type'].map(h => (
+                          <th key={h} className="border border-gray-200 px-1.5 py-1.5 text-gray-600 font-bold whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exp7Trials.map(t => (
+                        <tr key={t.trial} className="hover:bg-blue-50/50">
+                          <td className="border border-gray-200 px-1.5 py-1 text-center font-bold">{t.trial}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.m1.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.m2.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-red-600">{t.v1i.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-blue-600">{t.v2i.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-center">{t.restitution.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-red-600">{t.v1f.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-blue-600">{t.v2f.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.pBefore.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.pAfter.toFixed(4)}</td>
+                          <td className={`border border-gray-200 px-1.5 py-1 text-right font-bold ${
+                            Math.abs(t.pPctDiff) < 3 ? 'text-green-600' : 'text-red-600'
+                          }`}>{t.pPctDiff.toFixed(2)}%</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.keBefore.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.keAfter.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-amber-600 font-bold">{t.keLossPct.toFixed(2)}%</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-center">{t.collisionType}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Guidance text */}
+              <div className="px-4 py-1.5 border-t border-gray-100 text-[9px] font-mono text-gray-400">
+                {exp7Phase === 'idle' && !exp7AllDone && `Adjust masses, velocities, and restitution. Then click Run Collision. Trial ${exp7Trial}.`}
+                {exp7Phase === 'running' && 'Carts approaching... waiting for collision.'}
+                {exp7Phase === 'settled' && `Collision complete. v1_f = ${exp7PostV1.toFixed(4)}, v2_f = ${exp7PostV2.toFixed(4)}. Click Record.`}
+                {exp7Phase === 'recorded' && exp7Trial < 4 && `Trial ${exp7Trial} saved. Click Next Trial.`}
+                {exp7Phase === 'recorded' && exp7Trial >= 4 && 'All 4 trials complete! Generate PDF report.'}
+                {exp7AllDone && exp7Phase === 'idle' && 'All 4 trials recorded. Click PDF Report to export.'}
               </div>
             </div>
           </div>

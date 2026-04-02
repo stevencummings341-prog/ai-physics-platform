@@ -64,6 +64,23 @@ EXP2_DEFAULT_INITIAL_ANGLE = 90
 EXP2_DEFAULT_MASS1 = 1.0
 EXP2_DEFAULT_MASS2 = 1.0
 
+# Experiment 7 — momentum conservation (two-cart collision)
+EXP7_CART1_PATH = "/World/exp7/cart1"
+EXP7_CART2_PATH = "/World/exp7/cart2"
+EXP7_GROUND_PATH = "/World/exp7/ground"
+EXP7_MATERIAL_PATH = "/World/exp7/PhysicsMaterial"
+EXP7_DEFAULT_MASS1 = 0.25   # kg
+EXP7_DEFAULT_MASS2 = 0.25   # kg
+EXP7_DEFAULT_V1 = 0.40      # m/s (rightward)
+EXP7_DEFAULT_V2 = -0.40     # m/s (leftward — head-on)
+EXP7_DEFAULT_RESTITUTION = 1.0
+EXP7_CART_SIZE = (0.12, 0.08, 0.06)     # metres (l × w × h)
+EXP7_CART1_INIT_POS = (-0.50, 0.0, 0.03)
+EXP7_CART2_INIT_POS = (0.50, 0.0, 0.03)
+EXP7_WARMUP_SECONDS = 0.15
+EXP7_SOLVER_POS_ITERS = 64
+EXP7_SOLVER_VEL_ITERS = 32
+
 # Replicator
 REPLICATOR_INIT_MAX_RETRIES = 3
 REPLICATOR_INIT_RETRY_DELAY = 1.0

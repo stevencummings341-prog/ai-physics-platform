@@ -132,23 +132,28 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-07-momentum-conservation',
     title: 'Conservation of Momentum',
-    description: 'Verify momentum conservation in elastic and inelastic collisions.',
+    description: 'Verify momentum conservation in elastic and inelastic collisions between two carts. Run 4 trials with adjustable mass, velocity, and restitution to generate a lab report.',
     thumbnail: 'https://picsum.photos/seed/momentum/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '7',
     difficulty: 'Easy',
     isLocked: false,
     controls: [
-      { id: 'mass1', label: 'Mass 1 (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_mass1' },
-      { id: 'mass2', label: 'Mass 2 (kg)', type: 'slider', min: 0.1, max: 5, step: 0.1, defaultValue: 1.0, command: 'set_mass2' },
-      { id: 'velocity1', label: 'Initial Velocity 1 (m/s)', type: 'slider', min: 0, max: 10, step: 0.5, defaultValue: 5, command: 'set_velocity1' },
-      { id: 'elasticity', label: 'Coefficient of Restitution', type: 'slider', min: 0, max: 1, step: 0.1, defaultValue: 1, command: 'set_elasticity' },
-      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
+      { id: 'mass1', label: 'Cart 1 Mass (kg)', type: 'slider', min: 0.10, max: 2.0, step: 0.05, defaultValue: 0.25, command: 'set_mass1' },
+      { id: 'mass2', label: 'Cart 2 Mass (kg)', type: 'slider', min: 0.10, max: 2.0, step: 0.05, defaultValue: 0.25, command: 'set_mass2' },
+      { id: 'velocity1', label: 'Cart 1 Velocity (m/s)', type: 'slider', min: -2.0, max: 2.0, step: 0.05, defaultValue: 0.40, command: 'set_velocity1' },
+      { id: 'velocity2', label: 'Cart 2 Velocity (m/s)', type: 'slider', min: -2.0, max: 2.0, step: 0.05, defaultValue: -0.40, command: 'set_velocity2' },
+      { id: 'elasticity', label: 'Restitution (0=inelastic, 1=elastic)', type: 'slider', min: 0, max: 1, step: 0.05, defaultValue: 1.0, command: 'set_elasticity' },
+      { id: 'run', label: 'Run Collision', type: 'button', command: 'start_simulation' },
       { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
     ],
     chartConfig: [
-      { key: 'total_momentum', color: '#10b981', label: 'Total Momentum', yAxisId: 'left' },
-      { key: 'kinetic_energy', color: '#ff0000', label: 'Kinetic Energy (J)', yAxisId: 'right' }
+      { key: 'v1', color: '#ef4444', label: 'Cart 1 v (m/s)', yAxisId: 'left' },
+      { key: 'v2', color: '#3b82f6', label: 'Cart 2 v (m/s)', yAxisId: 'left' },
+      { key: 'p_total', color: '#10b981', label: 'Total p (kg·m/s)', yAxisId: 'right' },
+    ],
+    extraMetrics: [
+      { key: 'ke_total', label: 'Total KE (J)', color: '#f59e0b' }
     ]
   },
   {
