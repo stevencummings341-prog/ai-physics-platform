@@ -62,7 +62,18 @@ Build a full-stack physics experiment platform: Isaac Sim simulation backend + R
 | WebRTC signaling + camera | 8080 | HTTP POST | `PHYS_HTTP_PORT` |
 | WebSocket control + telemetry | 30000 | WS | `PHYS_WS_PORT` |
 
+| VR Hand Tracking (UDP) | 8888 | UDP | `PHYS_VR_PORT` |
+
 All overridable via environment variables or `configs/server.py`.
+
+## VR Integration
+
+Meta Quest 3S hand tracking is integrated via UDP on port 8888.  The Quest
+Unity app sends hand position, rotation and pinch data at 60 Hz.  The
+server creates translucent hand prims in the USD scene and supports
+proximity-based grab/release of experiment objects.
+
+Key modules: `core/vr_hand_receiver.py`, `core/vr.py`, `vr/` (Quest app code + docs).
 
 ## Source Of Truth
 

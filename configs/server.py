@@ -93,3 +93,20 @@ EXP7_SOLVER_VEL_ITERS = 32
 REPLICATOR_INIT_MAX_RETRIES = 3
 REPLICATOR_INIT_RETRY_DELAY = 1.0
 FRAME_CAPTURE_TIMEOUT = 0.2
+
+# VR — Meta Quest hand tracking
+VR_ENABLED = os.getenv("PHYS_VR_ENABLED", "true").lower() in ("1", "true", "yes")
+VR_UDP_HOST = "0.0.0.0"
+VR_UDP_PORT = int(os.getenv("PHYS_VR_PORT", "8888"))
+VR_UDP_TIMEOUT = 0.1
+VR_UPDATE_RATE = 60.0                  # expected Quest send rate (Hz)
+VR_SMOOTHING = True
+VR_SMOOTHING_ALPHA = 0.3
+VR_POSITION_SCALE = 2.0               # mapping from Quest workspace to scene
+VR_POSITION_OFFSET = (0.5, 0.0, 0.5)  # scene-space offset after scaling
+VR_PINCH_THRESHOLD = 0.6              # pinch strength to trigger grasp
+VR_GRASP_DISTANCE = 0.15              # metres — hand-to-object grab range
+VR_RELEASE_DELAY = 0.1                # seconds — debounce before release
+VR_HAND_SIZE = (0.08, 0.04, 0.12)     # visual cuboid size (metres)
+VR_LEFT_HAND_PATH = "/World/vr/left_hand"
+VR_RIGHT_HAND_PATH = "/World/vr/right_hand"

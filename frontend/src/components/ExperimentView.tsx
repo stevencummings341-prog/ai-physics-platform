@@ -116,6 +116,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const [exp2Progress, setExp2Progress] = useState<string>('');
   const [exp2ReportData, setExp2ReportData] = useState<any>(null);
 
+  // ── VR hand tracking ──
+  const [vrConnected, setVrConnected] = useState(false);
+
   // ── Generic experiment state ──
   const [controlValues, setControlValues] = useState<Record<string, number>>(() => {
     const v: Record<string, number> = {};
@@ -159,6 +162,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
 
     const unsub1 = isaacService.onTelemetry((data) => {
       latestData.current = data;
+      if (data.vr && typeof data.vr === 'object') {
+        setVrConnected(!!data.vr.vr_connected);
+      }
       const clamped = { ...data };
       for (const k of Object.keys(clamped)) {
         if (typeof clamped[k] === 'number' && k.includes('velocity') && Math.abs(clamped[k]) < 0.01) {
@@ -474,6 +480,12 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
               {isConnected ? 'LIVE' : 'OFF'}
             </div>
+            {vrConnected && (
+              <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                VR
+              </div>
+            )}
           </div>
         </div>
 
@@ -802,6 +814,12 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
               {isConnected ? 'LIVE' : 'OFF'}
             </div>
+            {vrConnected && (
+              <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                VR
+              </div>
+            )}
           </div>
         </div>
 
@@ -1053,9 +1071,17 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
           <div className="h-5 w-px bg-gray-300" />
           <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
         </div>
-        <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
-          <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-          {isConnected ? 'LIVE' : 'OFF'}
+        <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+            {isConnected ? 'LIVE' : 'OFF'}
+          </div>
+          {vrConnected && (
+            <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
+              <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+              VR
+            </div>
+          )}
         </div>
       </div>
 

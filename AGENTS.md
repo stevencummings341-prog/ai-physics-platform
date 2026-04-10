@@ -125,6 +125,31 @@ Browser → `frontend/` → WebSocket → `core/webrtc_server.py` → Isaac Sim 
 | Frontend | 5173 | (vite.config.ts) |
 | WebRTC HTTP | 8080 | `PHYS_HTTP_PORT` |
 | WebSocket | 30000 | `PHYS_WS_PORT` |
+| VR Hand Tracking (UDP) | 8888 | `PHYS_VR_PORT` |
+
+## VR Integration (Meta Quest 3S)
+
+The project supports real-time hand tracking from a Meta Quest 3S headset.
+
+**Architecture:**
+```
+Meta Quest 3S (Unity C# app) ──UDP JSON @60Hz──▶ core/vr_hand_receiver.py (port 8888)
+                                                    ↓
+                                              core/vr.py (VRBridge)
+                                                    ↓
+                                         core/webrtc_server.py (hand prims + telemetry)
+```
+
+**Key files:**
+- `vr/` — Quest Unity app code, Python Isaac Lab standalone scripts, setup docs
+- `core/vr_hand_receiver.py` — UDP receiver (threaded, no Isaac Lab dependency)
+- `core/vr.py` — VRBridge: creates hand prims in USD, proximity grasp logic
+- `configs/server.py` — VR_* constants (port, scale, thresholds)
+- `vr/test_hand_tracking.py` — simulate Quest data for testing without hardware
+
+**WebSocket commands:** `vr_enable`, `vr_disable`, `get_vr_status`
+
+**Disable VR:** set `PHYS_VR_ENABLED=false` environment variable before starting the server.
 
 ## Mandatory Physics Rules
 

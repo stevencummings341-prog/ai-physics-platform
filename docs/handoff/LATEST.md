@@ -2,10 +2,11 @@
 
 ## Current Pointer
 
-The latest relevant continuity notes (read both):
+The latest relevant continuity notes:
 
-1. **`docs/handoff/2026-03-29-session-context-anchor.md`** — **short “what we’re doing now”** (paths, ports, browser/Isaac workflow, user situation). Use this after context resets.
-2. `docs/handoff/2026-03-29-fullstack-integration.md` — full-stack integration narrative.
+1. **`docs/handoff/2026-04-10-vr-integration.md`** — VR hand tracking integration (Meta Quest 3S → WebRTC server).
+2. `docs/handoff/2026-03-29-session-context-anchor.md` — short "what we're doing now" (paths, ports, browser/Isaac workflow).
+3. `docs/handoff/2026-03-29-fullstack-integration.md` — full-stack integration narrative.
 
 Previous notes:
 

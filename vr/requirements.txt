@@ -1,0 +1,12 @@
+# Isaac Lab虚拟手控制系统依赖
+
+# 核心依赖
+numpy>=1.24.0
+torch>=2.0.0
+
+# Isaac Lab依赖 (需要单独安装Isaac Sim)
+# 参考: https://isaac-sim.github.io/IsaacLab/
+
+# 可选: 用于高级功能
+scipy>=1.10.0  # 科学计算
+matplotlib>=3.7.0  # 可视化

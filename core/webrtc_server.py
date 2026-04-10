@@ -63,7 +63,14 @@ from configs.server import (
     EXP7_DEFAULT_V1, EXP7_DEFAULT_V2, EXP7_DEFAULT_RESTITUTION,
     EXP7_CART_SIZE, EXP7_CART1_INIT_POS, EXP7_CART2_INIT_POS,
     EXP7_WARMUP_SECONDS, EXP7_SOLVER_POS_ITERS, EXP7_SOLVER_VEL_ITERS,
+    VR_ENABLED, VR_UDP_HOST, VR_UDP_PORT, VR_UDP_TIMEOUT,
+    VR_UPDATE_RATE, VR_SMOOTHING, VR_SMOOTHING_ALPHA,
+    VR_POSITION_SCALE, VR_POSITION_OFFSET,
+    VR_PINCH_THRESHOLD, VR_GRASP_DISTANCE, VR_RELEASE_DELAY,
+    VR_HAND_SIZE, VR_LEFT_HAND_PATH, VR_RIGHT_HAND_PATH,
 )
+
+from core.vr import VRBridge
 
 # WebRTC dependencies (optional — graceful degradation)
 try:
@@ -548,6 +555,25 @@ class WebRTCServer:
 
         self._dc_interface = None
 
+        # VR hand tracking bridge
+        self.vr_bridge = VRBridge(
+            enabled=VR_ENABLED,
+            host=VR_UDP_HOST,
+            port=VR_UDP_PORT,
+            timeout=VR_UDP_TIMEOUT,
+            update_rate=VR_UPDATE_RATE,
+            smoothing=VR_SMOOTHING,
+            smoothing_alpha=VR_SMOOTHING_ALPHA,
+            position_scale=VR_POSITION_SCALE,
+            position_offset=VR_POSITION_OFFSET,
+            pinch_threshold=VR_PINCH_THRESHOLD,
+            grasp_distance=VR_GRASP_DISTANCE,
+            release_delay=VR_RELEASE_DELAY,
+            hand_size=VR_HAND_SIZE,
+            left_hand_path=VR_LEFT_HAND_PATH,
+            right_hand_path=VR_RIGHT_HAND_PATH,
+        )
+
     # --- HTTP endpoints ----------------------------------------------------
 
     async def offer(self, request):
@@ -755,6 +781,8 @@ class WebRTCServer:
                 asyncio.ensure_future(self._deferred_camera_readjust())
             elif exp_id == "2":
                 asyncio.ensure_future(self._deferred_exp2_camera())
+            if self.vr_bridge.enabled:
+                self.vr_bridge.ensure_hand_prims()
             await ws.send_json({"type": "experiment_entered", "experiment_id": exp_id})
 
         elif mtype == "switch_camera":
@@ -838,6 +866,40 @@ class WebRTCServer:
         # Experiment 8 — resonance in air column
         elif mtype == "set_length":
             self.exp8_length = float(data.get("value", 50.0))
+
+        # VR hand tracking commands
+        elif mtype == "vr_enable":
+            if not self.vr_bridge.enabled:
+                self.vr_bridge.enabled = True
+                self.vr_bridge.start()
+                self.vr_bridge.ensure_hand_prims()
+            await ws.send_json({"type": "vr_status", "enabled": True})
+
+        elif mtype == "vr_disable":
+            if self.vr_bridge.enabled:
+                self.vr_bridge.remove_hand_prims()
+                self.vr_bridge.stop()
+                self.vr_bridge.enabled = False
+            await ws.send_json({"type": "vr_status", "enabled": False})
+
+        elif mtype == "get_vr_status":
+            await ws.send_json({
+                "type": "vr_status",
+                "enabled": self.vr_bridge.enabled,
+                "connected": self.vr_bridge.any_tracking,
+                "packets": self.vr_bridge.packets_received,
+            })
+
+    # --- VR helpers --------------------------------------------------------
+
+    def _vr_graspable_paths(self) -> list:
+        """Return USD prim paths that VR hands may grab in the current experiment."""
+        exp = self.current_experiment
+        if exp == "1":
+            return [EXP1_RING_PATH]
+        if exp == "7":
+            return [EXP7_CART1_PATH, EXP7_CART2_PATH]
+        return []
 
     # --- Helpers -----------------------------------------------------------
 
@@ -2048,6 +2110,15 @@ class WebRTCServer:
                         }}
                     else:
                         msg = {"type": "telemetry", "data": {"timestamp": now, "is_running": tl.is_playing()}}
+
+                    # VR hand tracking: tick + inject status into telemetry
+                    if self.vr_bridge.enabled:
+                        vr_info = self.vr_bridge.tick(
+                            TELEMETRY_BROADCAST_INTERVAL,
+                            graspable_paths=self._vr_graspable_paths(),
+                        )
+                        msg["data"]["vr"] = vr_info
+
                     for ws in list(self.ws_clients):
                         if not ws.closed:
                             await ws.send_json(msg)
@@ -2120,6 +2191,12 @@ class WebRTCServer:
         await self._ws_site.start()
 
         self._monitor_task = asyncio.ensure_future(self._telemetry_loop())
+
+        # Start VR hand tracking receiver
+        if self.vr_bridge.enabled:
+            self.vr_bridge.start()
+            carb.log_info(f"VR hand tracking listening on UDP :{VR_UDP_PORT}")
+
         carb.log_info(
             f"Server started — HTTP :{self.http_port}  WS :{self.ws_port}  IP {HOST_IP}"
         )
@@ -2127,6 +2204,8 @@ class WebRTCServer:
     async def stop(self):
         if self._monitor_task:
             self._monitor_task.cancel()
+        if self.vr_bridge.enabled:
+            self.vr_bridge.stop()
         if hasattr(self, "_http_site"):
             await self._http_site.stop()
         if hasattr(self, "_ws_site"):
