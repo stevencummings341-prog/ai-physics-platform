@@ -58,11 +58,44 @@ from configs.server import (
     EXP2_PIVOT_POS, EXP2_ROD_DRAW_WIDTH, EXP2_ROD_DRAW_DEPTH,
     EXP2_BOB_DRAW_SIZE, EXP2_PIVOT_DRAW_SIZE, EXP2_FLOOR_Z,
     REPLICATOR_INIT_MAX_RETRIES, CAMERA_SCRIPT_DIR,
+    EXP3_PIVOT_PATH, EXP3_PENDULUM_PATH, EXP3_BALL_PATH, EXP3_LAUNCHER_PATH,
+    EXP3_MATERIAL_BALL_PATH, EXP3_MATERIAL_CATCHER_PATH, EXP3_JOINT_PATH,
+    EXP3_DEFAULT_BALL_MASS, EXP3_DEFAULT_PEND_MASS,
+    EXP3_DEFAULT_V0, EXP3_DEFAULT_L,
+    EXP3_PIVOT_HEIGHT, EXP3_GROUND_Z,
+    EXP3_BALL_SIZE, EXP3_ROD_THICKNESS,
+    EXP3_CATCHER_W, EXP3_CATCHER_H, EXP3_CATCHER_WALL_T,
+    EXP3_LAUNCHER_GAP, EXP3_BALL_SPAWN_OFFSET,
+    EXP3_SOLVER_POS_ITERS, EXP3_SOLVER_VEL_ITERS,
+    EXP3_WARMUP_SECONDS, EXP3_AUTO_SETTLE_SECONDS,
+    EXP4_PIVOT_PATH, EXP4_DISK_PATH, EXP4_DRIVER_ARM_PATH,
+    EXP4_MATERIAL_PATH, EXP4_JOINT_PATH,
+    EXP4_DEFAULT_SPRING_K, EXP4_DEFAULT_DAMPING_GAMMA,
+    EXP4_DEFAULT_DRIVE_AMP, EXP4_DEFAULT_DRIVE_FREQ,
+    EXP4_DISK_MASS, EXP4_DISK_RADIUS, EXP4_DISK_THICKNESS,
+    EXP4_PIVOT_HEIGHT, EXP4_GROUND_Z,
+    EXP4_SOLVER_POS_ITERS, EXP4_SOLVER_VEL_ITERS,
+    EXP4_DRIVER_UPDATE_HZ,
+    EXP5_PIVOT_PATH, EXP5_BAR_PATH, EXP5_MATERIAL_PATH, EXP5_JOINT_PATH,
+    EXP5_DEFAULT_M, EXP5_DEFAULT_L, EXP5_DEFAULT_X, EXP5_DEFAULT_THETA0_DEG,
+    EXP5_BAR_THICKNESS, EXP5_PIVOT_HEIGHT, EXP5_GROUND_Z,
+    EXP5_SOLVER_POS_ITERS, EXP5_SOLVER_VEL_ITERS,
     EXP7_CART1_PATH, EXP7_CART2_PATH, EXP7_GROUND_PATH, EXP7_MATERIAL_PATH,
     EXP7_DEFAULT_MASS1, EXP7_DEFAULT_MASS2,
     EXP7_DEFAULT_V1, EXP7_DEFAULT_V2, EXP7_DEFAULT_RESTITUTION,
     EXP7_CART_SIZE, EXP7_CART1_INIT_POS, EXP7_CART2_INIT_POS,
     EXP7_WARMUP_SECONDS, EXP7_SOLVER_POS_ITERS, EXP7_SOLVER_VEL_ITERS,
+    EXP8_ROOT_PATH, EXP8_TUBE_PATH, EXP8_SPEAKER_PATH, EXP8_DIAPHRAGM_PATH,
+    EXP8_PISTON_PATH, EXP8_SLICE_ROOT, EXP8_SLICE_PATH_TEMPLATE,
+    EXP8_MARKER_ROOT, EXP8_MARKER_PATH_TEMPLATE,
+    EXP8_N_SLICES, EXP8_TUBE_TOTAL_LENGTH, EXP8_TUBE_DIAMETER, EXP8_TUBE_WALL,
+    EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z, EXP8_GROUND_Z,
+    EXP8_SLICE_DRAW_RADIUS, EXP8_AMP_SCALE,
+    EXP8_C_SIM, EXP8_C_REAL, EXP8_FREQ_SCALE,
+    EXP8_DEFAULT_LENGTH_CM, EXP8_DEFAULT_FREQUENCY, EXP8_DEFAULT_AMPLITUDE_MM,
+    EXP8_DEFAULT_DAMPING, EXP8_DEFAULT_MODE,
+    EXP8_PHYS_SUBSTEPS, EXP8_WAVE_TICK_HZ,
+    EXP8_TELEMETRY_HISTORY, EXP8_RESONANCE_THRESHOLD,
     VR_ENABLED, VR_UDP_HOST, VR_UDP_PORT, VR_UDP_TIMEOUT,
     VR_UPDATE_RATE, VR_SMOOTHING, VR_SMOOTHING_ALPHA,
     VR_POSITION_SCALE, VR_POSITION_OFFSET,
@@ -509,17 +542,63 @@ class WebRTCServer:
         self._exp2_T0: float = 0.0
         self._exp2_recompute_props()
 
-        # Experiment 3 — ballistic pendulum
-        self.exp3_projectile_mass = 0.05
-        self.exp3_pendulum_mass = 2.0
+        # Experiment 3 — ballistic pendulum (PhysX compound rigid body + revolute joint)
+        self.exp3_ball_mass = EXP3_DEFAULT_BALL_MASS
+        self.exp3_pend_mass = EXP3_DEFAULT_PEND_MASS
+        self.exp3_v0 = EXP3_DEFAULT_V0
+        self.exp3_L = EXP3_DEFAULT_L                # pivot → catcher CM (rod length)
+        self.exp3_phase = "idle"                    # idle → firing → swinging → settled
+        self.exp3_scene_built = False
+        self.exp3_theta = 0.0                       # rad, live pendulum angle (around Y)
+        self.exp3_omega = 0.0                       # rad/s
+        self.exp3_theta_max = 0.0                   # rad, running max |θ|
+        self.exp3_v0_measured = 0.0                 # m/s, computed from θmax via Eq. 4
+        self.exp3_ball_velocity = 0.0               # m/s (live |v| of ball)
+        self.exp3_fire_time = 0.0                   # wall-clock at fire
+        self.exp3_collision_time = 0.0
+        self.exp3_collision_detected = False
+        self.exp3_prev_omega_sign = 0
+        self.exp3_settle_deadline = 0.0
 
-        # Experiment 4 — driven damped oscillation
-        self.exp4_damping = 0.5
-        self.exp4_frequency = 1.0
+        # Experiment 3 — legacy aliases (kept so old websocket messages still work)
+        self.exp3_projectile_mass = self.exp3_ball_mass
+        self.exp3_pendulum_mass = self.exp3_pend_mass
 
-        # Experiment 5 — rotational inertia
-        self.exp5_pivot = 25.0
-        self.exp5_angle = 10.0
+        # Experiment 4 — driven damped torsional oscillator (PhysX-native)
+        self.exp4_spring_k = EXP4_DEFAULT_SPRING_K             # κ (N·m/rad)
+        self.exp4_damping_gamma = EXP4_DEFAULT_DAMPING_GAMMA   # γ = b/I (1/s)
+        self.exp4_drive_amp = EXP4_DEFAULT_DRIVE_AMP           # A (rad)
+        self.exp4_frequency = EXP4_DEFAULT_DRIVE_FREQ          # f_d (Hz)
+        self.exp4_disk_mass = EXP4_DISK_MASS
+        self.exp4_disk_radius = EXP4_DISK_RADIUS
+        self.exp4_phase = "idle"            # idle → running → free → stopped
+        self.exp4_scene_built = False
+        self.exp4_theta = 0.0               # rad   (live disk angle)
+        self.exp4_omega = 0.0               # rad/s (live disk ang. vel.)
+        self.exp4_theta_drive = 0.0         # rad   (driver arm angle)
+        self.exp4_sim_start_time = 0.0
+        self.exp4_peak_amp = 0.0            # rad   (running peak |θ|)
+        self.exp4_peak_decay = 0.995        # exponential decay of peak hold
+        self.exp4_drive_task: Optional[asyncio.Task] = None
+        self._exp4_drive_target_attr = None  # cached USD attr handle
+        self._exp4_drive_arm_op = None       # cached RotateZOp on driver arm
+        # Legacy alias (old message type "set_damping" still needs a bucket)
+        self.exp4_damping = self.exp4_damping_gamma
+
+        # Experiment 5 — physical pendulum (rotational inertia)
+        self.exp5_m = EXP5_DEFAULT_M
+        self.exp5_L = EXP5_DEFAULT_L
+        self.exp5_x = EXP5_DEFAULT_X
+        self.exp5_theta0_deg = EXP5_DEFAULT_THETA0_DEG
+        self.exp5_phase = "idle"          # idle → running → stopped
+        self.exp5_scene_built = False
+        self.exp5_theta = 0.0             # rad (live, from USD pose)
+        self.exp5_omega = 0.0             # rad/s (live, from dynamic_control)
+        self.exp5_sim_start_time = 0.0    # wall-clock ref for sim_time
+        self.exp5_measured_period = 0.0   # rolling average period (s)
+        self.exp5_period_samples: list = []
+        self.exp5_pos_zero_crossings: list = []
+        self.exp5_prev_theta_sign = 1
 
         # Experiment 6 — centripetal force
         self.exp6_mass = 0.5
@@ -544,9 +623,28 @@ class WebRTCServer:
         self.exp7_collision_detected = False
         self.exp7_deadline = 0.0           # auto-settle timestamp
 
-        # Experiment 8 — resonance in air column
-        self.exp8_length = 50.0
-        self.exp8_frequency = 512.0
+        # Experiment 8 — resonance in air column (driven 1-D wave equation
+        # with PhysX-rendered air slices)
+        self.exp8_length_m = EXP8_DEFAULT_LENGTH_CM / 100.0
+        self.exp8_frequency = EXP8_DEFAULT_FREQUENCY        # Hz, real-world
+        self.exp8_amplitude_mm = EXP8_DEFAULT_AMPLITUDE_MM  # mm, speaker excursion
+        self.exp8_damping = EXP8_DEFAULT_DAMPING            # γ (1/s)
+        self.exp8_mode = EXP8_DEFAULT_MODE                  # "closed" | "open"
+        self.exp8_phase = "idle"                            # idle → running → stopped
+        self.exp8_scene_built = False
+        self.exp8_driver_running = False
+        self.exp8_sim_start_time = 0.0
+        # FDM wave-equation state (allocated in _exp8_reset_fields)
+        self._exp8_u_prev = np.zeros(EXP8_N_SLICES + 1, dtype=np.float64)
+        self._exp8_u_curr = np.zeros(EXP8_N_SLICES + 1, dtype=np.float64)
+        self._exp8_u_next = np.zeros(EXP8_N_SLICES + 1, dtype=np.float64)
+        self._exp8_probe_history: list = []          # RMS probe trace
+        self._exp8_amp_history: list = []            # max |u| over last second
+        self._exp8_update_task: Optional[asyncio.Task] = None
+        self._exp8_last_rms = 0.0
+        self._exp8_last_peak = 0.0
+        self._exp8_resonance_ratio = 0.0
+        self._exp8_nearest_mode = 1
 
         # Generic per-experiment parameter store for telemetry
         self._exp_params: Dict[str, Dict[str, float]] = {}
@@ -643,6 +741,12 @@ class WebRTCServer:
         if experiment_id == "2":
             await self._setup_exp2_scene()
             return web.Response(text=json.dumps({"status": "ok"}))
+        if experiment_id == "3":
+            await self._setup_exp3_scene()
+            return web.Response(text=json.dumps({"status": "ok"}))
+        if experiment_id == "4":
+            await self._setup_exp4_scene()
+            return web.Response(text=json.dumps({"status": "ok"}))
         usd_path = p.get("usd_path")
         if not usd_path:
             project_root = _PROJECT_ROOT
@@ -683,6 +787,14 @@ class WebRTCServer:
                 await self._start_exp7_collision()
             elif self.current_experiment == "2":
                 await self._start_exp2_sim()
+            elif self.current_experiment == "4":
+                await self._start_exp4_sim()
+            elif self.current_experiment == "5":
+                await self._start_exp5_sim()
+            elif self.current_experiment == "3":
+                await self._fire_exp3_ball()
+            elif self.current_experiment == "8":
+                await self._start_exp8_drive()
             else:
                 if not getattr(self, "_has_started", False):
                     if self.current_experiment == "1":
@@ -694,6 +806,17 @@ class WebRTCServer:
         elif mtype == "stop_simulation":
             if self.current_experiment == "2":
                 self.exp2_phase = "stopped"
+            elif self.current_experiment == "4":
+                self.exp4_phase = "stopped"
+                if self.exp4_drive_task and not self.exp4_drive_task.done():
+                    self.exp4_drive_task.cancel()
+                    self.exp4_drive_task = None
+            elif self.current_experiment == "5":
+                self.exp5_phase = "stopped"
+            elif self.current_experiment == "3":
+                self.exp3_phase = "settled"
+            elif self.current_experiment == "8":
+                await self._stop_exp8_drive()
             self.simulation_control_enabled = False
             tl.stop()
 
@@ -712,8 +835,16 @@ class WebRTCServer:
             elif self.current_experiment == "2":
                 self._reset_exp2_state()
                 self._exp2_update_pose(0.0)
+            elif self.current_experiment == "3":
+                await self._reset_exp3()
+            elif self.current_experiment == "4":
+                await self._reset_exp4()
+            elif self.current_experiment == "5":
+                await self._reset_exp5()
             elif self.current_experiment == "7":
                 await self._reset_exp7()
+            elif self.current_experiment == "8":
+                await self._reset_exp8()
             tl.stop()
             tl.set_current_time(0.0)
             tl.stop()
@@ -752,6 +883,12 @@ class WebRTCServer:
             elif exp_id == "2":
                 await self._setup_exp2_scene()
                 await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
+            elif exp_id == "3":
+                await self._setup_exp3_scene()
+                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
+            elif exp_id == "4":
+                await self._setup_exp4_scene()
+                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
             else:
                 usd_path = data.get("usd_path")
                 if not usd_path:
@@ -773,14 +910,30 @@ class WebRTCServer:
             if exp_id == "2":
                 self._reset_exp2_state()
                 await self._setup_exp2_scene()
+            elif exp_id == "3":
+                await self._setup_exp3_scene()
+            elif exp_id == "4":
+                await self._setup_exp4_scene()
+            elif exp_id == "5":
+                await self._setup_exp5_scene()
             elif exp_id == "7":
                 await self._setup_exp7_scene()
+            elif exp_id == "8":
+                await self._setup_exp8_scene()
             await self._switch_camera(exp_id)
             if exp_id == "1":
                 await self._apply_exp1_params()
                 asyncio.ensure_future(self._deferred_camera_readjust())
             elif exp_id == "2":
                 asyncio.ensure_future(self._deferred_exp2_camera())
+            elif exp_id == "3":
+                asyncio.ensure_future(self._deferred_exp3_camera())
+            elif exp_id == "4":
+                asyncio.ensure_future(self._deferred_exp4_camera())
+            elif exp_id == "5":
+                asyncio.ensure_future(self._deferred_exp5_camera())
+            elif exp_id == "8":
+                asyncio.ensure_future(self._deferred_exp8_camera())
             if self.vr_bridge.enabled:
                 self.vr_bridge.ensure_hand_prims()
             await ws.send_json({"type": "experiment_entered", "experiment_id": exp_id})
@@ -816,28 +969,67 @@ class WebRTCServer:
             asyncio.ensure_future(self._run_exp2_full_experiment(ws))
 
         # Experiment 3 — ballistic pendulum
-        elif mtype == "set_projectile_mass":
-            self.exp3_projectile_mass = float(data.get("value", 0.05))
-            await self._apply_mass_at("/World/exp3/projectile", self.exp3_projectile_mass)
-        elif mtype == "set_pendulum_mass":
-            self.exp3_pendulum_mass = float(data.get("value", 2.0))
-            await self._apply_mass_at("/World/exp3/pendulum", self.exp3_pendulum_mass)
+        elif mtype in ("set_ball_mass", "set_projectile_mass"):
+            self.exp3_ball_mass = float(data.get("value", EXP3_DEFAULT_BALL_MASS))
+            self.exp3_projectile_mass = self.exp3_ball_mass  # legacy alias
+            if self.exp3_scene_built:
+                await self._apply_mass_at(EXP3_BALL_PATH, self.exp3_ball_mass)
+        elif mtype in ("set_pend_mass", "set_pendulum_mass"):
+            self.exp3_pend_mass = float(data.get("value", EXP3_DEFAULT_PEND_MASS))
+            self.exp3_pendulum_mass = self.exp3_pend_mass  # legacy alias
+            if self.exp3_scene_built:
+                await self._apply_mass_at(EXP3_PENDULUM_PATH, self.exp3_pend_mass)
+        elif mtype == "set_exp3_v0":
+            self.exp3_v0 = float(data.get("value", EXP3_DEFAULT_V0))
+        elif mtype == "set_exp3_L":
+            # Pivot-to-CM distance — changing L requires a scene rebuild
+            self.exp3_L = max(0.10, float(data.get("value", EXP3_DEFAULT_L)))
+            if self.exp3_scene_built:
+                await self._setup_exp3_scene()
 
-        # Experiment 4 — driven damped oscillation
-        elif mtype == "set_damping":
-            self.exp4_damping = float(data.get("value", 0.5))
-        elif mtype == "set_frequency":
-            val = float(data.get("value", 1.0))
-            if self.current_experiment == "4":
-                self.exp4_frequency = val
-            elif self.current_experiment == "8":
+        # Experiment 4 — driven damped torsional oscillator (PhysX-native)
+        elif mtype in ("set_exp4_frequency", "set_frequency"):
+            val = float(data.get("value", EXP4_DEFAULT_DRIVE_FREQ))
+            # `set_frequency` is shared with Exp 8; route by current experiment
+            if mtype == "set_frequency" and self.current_experiment == "8":
                 self.exp8_frequency = val
+            else:
+                self.exp4_frequency = max(0.01, val)
+        elif mtype in ("set_exp4_damping", "set_damping"):
+            val = float(data.get("value", EXP4_DEFAULT_DAMPING_GAMMA))
+            # `set_damping` is shared with Exp 8; route by current experiment
+            if mtype == "set_damping" and self.current_experiment == "8":
+                self.exp8_damping = max(0.0, min(20.0, val))
+            else:
+                self.exp4_damping_gamma = max(0.0, val)
+                self.exp4_damping = self.exp4_damping_gamma  # legacy alias
+                self._apply_exp4_drive_params()
+        elif mtype == "set_exp4_spring":
+            self.exp4_spring_k = max(1e-6, float(data.get("value", EXP4_DEFAULT_SPRING_K)))
+            self._apply_exp4_drive_params()
+        elif mtype == "set_exp4_drive_amplitude":
+            self.exp4_drive_amp = max(0.0, float(data.get("value", EXP4_DEFAULT_DRIVE_AMP)))
+        elif mtype == "exp4_free_oscillation":
+            await self._start_exp4_free_oscillation()
 
-        # Experiment 5 — rotational inertia
-        elif mtype == "set_pivot":
-            self.exp5_pivot = float(data.get("value", 25.0))
-        elif mtype == "set_angle":
-            self.exp5_angle = float(data.get("value", 10.0))
+        # Experiment 5 — physical pendulum (rotational inertia)
+        elif mtype == "set_exp5_m":
+            self.exp5_m = float(data.get("value", EXP5_DEFAULT_M))
+            if self.exp5_scene_built:
+                await self._apply_mass_at(EXP5_BAR_PATH, self.exp5_m)
+        elif mtype == "set_exp5_L":
+            self.exp5_L = float(data.get("value", EXP5_DEFAULT_L))
+            # Geometry change requires rebuild to adjust bar scale + joint offset
+            if self.exp5_scene_built:
+                await self._setup_exp5_scene()
+        elif mtype == "set_exp5_x":
+            new_x = float(data.get("value", EXP5_DEFAULT_X))
+            # Clamp to [0.01, L/2] to stay physically meaningful
+            self.exp5_x = max(0.01, min(new_x, self.exp5_L / 2.0))
+            if self.exp5_scene_built:
+                await self._setup_exp5_scene()
+        elif mtype == "set_exp5_theta0":
+            self.exp5_theta0_deg = float(data.get("value", EXP5_DEFAULT_THETA0_DEG))
 
         # Experiment 6 — centripetal force
         elif mtype == "set_radius":
@@ -865,7 +1057,29 @@ class WebRTCServer:
 
         # Experiment 8 — resonance in air column
         elif mtype == "set_length":
-            self.exp8_length = float(data.get("value", 50.0))
+            length_cm = float(data.get("value", EXP8_DEFAULT_LENGTH_CM))
+            length_cm = max(5.0, min(EXP8_TUBE_TOTAL_LENGTH * 100.0, length_cm))
+            self.exp8_length_m = length_cm / 100.0
+            if self.current_experiment == "8" and self.exp8_scene_built:
+                await self._exp8_apply_piston_position()
+                self._exp8_reset_fields()
+        elif mtype == "set_exp8_amplitude":
+            amp_mm = float(data.get("value", EXP8_DEFAULT_AMPLITUDE_MM))
+            self.exp8_amplitude_mm = max(0.0, min(10.0, amp_mm))
+        elif mtype == "set_exp8_damping":
+            gamma = float(data.get("value", EXP8_DEFAULT_DAMPING))
+            self.exp8_damping = max(0.0, min(20.0, gamma))
+        elif mtype in ("set_exp8_mode", "exp8_open_tube", "exp8_closed_tube"):
+            if mtype == "exp8_open_tube":
+                self.exp8_mode = "open"
+            elif mtype == "exp8_closed_tube":
+                self.exp8_mode = "closed"
+            else:
+                mode = str(data.get("value", EXP8_DEFAULT_MODE)).lower()
+                self.exp8_mode = "open" if mode == "open" else "closed"
+            if self.current_experiment == "8" and self.exp8_scene_built:
+                await self._exp8_apply_piston_position()
+                self._exp8_reset_fields()
 
         # VR hand tracking commands
         elif mtype == "vr_enable":
@@ -1269,6 +1483,1750 @@ class WebRTCServer:
                 await ws.send_json({"type": "exp2_progress", "data": {
                     "phase": f"Error: {exc}", "current": 0, "total": 0}})
 
+    # --- Experiment 3 — ballistic pendulum (PhysX compound body + joint) ---
+
+    async def _setup_exp3_scene(self):
+        """Build the ballistic-pendulum scene procedurally.
+
+        Scene layout (world-frame, Z-up, gravity = −9.81 m/s²):
+
+            +Z (up)
+             │     ┌─────────┐ pivot (kinematic, at (0, 0, EXP3_PIVOT_HEIGHT))
+             │     │         │
+             │     │ rod     │  thin vertical rod (compound child collider)
+             │     │         │  body1 of the revolute joint
+             │     │         │
+             │     └──┬──────┘
+             │        │        catcher CM at (0, 0, PIVOT_HEIGHT − L)
+             │   ┌────┴────┐
+             │   │ catcher │   4-walled "cup" opening toward −X (back wall +
+             │   │  cup    │   left/right/floor walls ⇒ traps the ball on
+             │   └─────────┘   impact by geometry, as a styrofoam catcher does)
+             │
+             │   ball  ──▶ +X   (fired on `start_simulation` with v0 toward
+             │                    the catcher opening)
+             └──────────────► +X
+             launcher (visual only, on −X side)
+
+        All collision shapes live on a single parent rigid body
+        `/World/exp3/pendulum` so PhysX treats rod + cup as one compound
+        body welded to the joint. The ball is a separate dynamic cuboid.
+        A zero-restitution, high-friction material is bound to both sides
+        so the collision is maximally inelastic (classical ballistic
+        pendulum assumption).
+        """
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp3: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, "/World/exp3")
+
+            # Physics scene — standard Earth gravity along −Z
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(9.81)
+
+            UsdLux.DomeLight.Define(stage, "/World/exp3/DomeLight").CreateIntensityAttr(1500.0)
+
+            # Floor (visual only)
+            self._exp3_make_visual(
+                stage, "/World/exp3/ground",
+                pos=(0, 0, EXP3_GROUND_Z),
+                scale=(4.0, 3.0, 0.02),
+                color=(0.11, 0.11, 0.13),
+            )
+            # Grid lines (light cosmetic detail, same style as exp5/exp7)
+            for i, xv in enumerate(np.arange(-1.5, 1.51, 0.25)):
+                self._exp3_make_visual(
+                    stage, f"/World/exp3/GridX_{i}",
+                    pos=(float(xv), 0, EXP3_GROUND_Z + 0.011),
+                    scale=(0.006, 2.5, 0.002),
+                    color=(0.75, 0.75, 0.78),
+                )
+            for i, yv in enumerate(np.arange(-1.25, 1.26, 0.25)):
+                self._exp3_make_visual(
+                    stage, f"/World/exp3/GridY_{i}",
+                    pos=(0, float(yv), EXP3_GROUND_Z + 0.011),
+                    scale=(3.0, 0.006, 0.002),
+                    color=(0.75, 0.75, 0.78),
+                )
+
+            # -------- Support stand (visual only) --------------------------
+            # A tall post on +Y holds a horizontal arm that carries the
+            # pivot at (0,0,PIVOT_HEIGHT). Offset in +Y keeps the swing
+            # plane (y≈0) unobstructed from the −Y camera view.
+            post_y = 0.12
+            post_top = EXP3_PIVOT_HEIGHT - 0.015
+            self._exp3_make_visual(
+                stage, "/World/exp3/post",
+                pos=(0, post_y, (EXP3_GROUND_Z + post_top) / 2.0),
+                scale=(0.05, 0.05, max(0.01, post_top - EXP3_GROUND_Z)),
+                color=(0.30, 0.30, 0.34),
+            )
+            self._exp3_make_visual(
+                stage, "/World/exp3/post_arm",
+                pos=(0, post_y / 2.0, EXP3_PIVOT_HEIGHT),
+                scale=(0.04, post_y, 0.04),
+                color=(0.30, 0.30, 0.34),
+            )
+            self._exp3_make_visual(
+                stage, "/World/exp3/post_base",
+                pos=(0, post_y, EXP3_GROUND_Z + 0.015),
+                scale=(0.22, 0.22, 0.025),
+                color=(0.22, 0.22, 0.25),
+            )
+
+            # -------- Launcher (visual only, on −X side) -------------------
+            # Muzzle is aimed at the centre of the catcher opening.
+            catcher_front_x = -EXP3_CATCHER_W / 2.0  # opening face x-coord
+            muzzle_x = catcher_front_x - EXP3_LAUNCHER_GAP
+            catcher_z = EXP3_PIVOT_HEIGHT - self.exp3_L
+            self._exp3_make_visual(
+                stage, EXP3_LAUNCHER_PATH + "_barrel",
+                pos=(muzzle_x - 0.10, 0, catcher_z),
+                scale=(0.22, 0.035, 0.035),
+                color=(0.85, 0.20, 0.15),
+            )
+            self._exp3_make_visual(
+                stage, EXP3_LAUNCHER_PATH + "_body",
+                pos=(muzzle_x - 0.22, 0, catcher_z - 0.03),
+                scale=(0.10, 0.09, 0.09),
+                color=(0.30, 0.32, 0.38),
+            )
+            self._exp3_make_visual(
+                stage, EXP3_LAUNCHER_PATH + "_base",
+                pos=(muzzle_x - 0.22, 0, EXP3_GROUND_Z + 0.015),
+                scale=(0.18, 0.18, 0.025),
+                color=(0.22, 0.22, 0.25),
+            )
+
+            # -------- Kinematic pivot (body0 of revolute joint) ------------
+            self._exp3_make_pivot(
+                stage, EXP3_PIVOT_PATH,
+                pos=(0, 0, EXP3_PIVOT_HEIGHT),
+                scale=(0.05, 0.05, 0.05),
+                color=(0.95, 0.75, 0.10),
+            )
+
+            # -------- Pendulum compound rigid body (body1) -----------------
+            # Parent Xform carries RigidBodyAPI + MassAPI. Child cubes carry
+            # CollisionAPI only ⇒ PhysX welds them into one compound body.
+            self._exp3_build_pendulum_body(stage)
+
+            # -------- Revolute joint (Y-axis, swings in XZ plane) ----------
+            self._exp3_make_joint(stage, self.exp3_L)
+
+            # -------- Ball (independent dynamic body) ----------------------
+            # Spawn just outside the catcher opening, aimed at its centre.
+            ball_x = catcher_front_x - EXP3_BALL_SPAWN_OFFSET
+            self._exp3_make_ball(
+                stage, EXP3_BALL_PATH,
+                pos=(ball_x, 0, catcher_z),
+                mass=self.exp3_ball_mass,
+                color=(0.92, 0.85, 0.20),
+            )
+
+            # -------- Physics materials ------------------------------------
+            # Catcher: zero restitution + high friction → traps the ball.
+            # Ball:    same, so the pair behaves perfectly inelastically.
+            self._exp3_make_material(stage, EXP3_MATERIAL_CATCHER_PATH,
+                                     restitution=0.0, static_fr=1.2, dyn_fr=1.0)
+            self._exp3_make_material(stage, EXP3_MATERIAL_BALL_PATH,
+                                     restitution=0.0, static_fr=0.8, dyn_fr=0.6)
+            self._exp3_bind_material(
+                stage, EXP3_PENDULUM_PATH, EXP3_MATERIAL_CATCHER_PATH,
+            )
+            self._exp3_bind_material(
+                stage, EXP3_BALL_PATH, EXP3_MATERIAL_BALL_PATH,
+            )
+
+            self.exp3_scene_built = True
+            self.exp3_phase = "idle"
+            self.exp3_theta = 0.0
+            self.exp3_omega = 0.0
+            self.exp3_theta_max = 0.0
+            self.exp3_v0_measured = 0.0
+            self.exp3_collision_detected = False
+            self.exp3_prev_omega_sign = 0
+
+            for _ in range(8):
+                await app.next_update_async()
+
+            self._force_exp3_camera(stage)
+            carb.log_warn(
+                f"exp3: scene built  m_ball={self.exp3_ball_mass:.4f}  "
+                f"m_pend={self.exp3_pend_mass:.4f}  L={self.exp3_L:.3f}  "
+                f"v0={self.exp3_v0:.2f}"
+            )
+        except Exception as exc:
+            carb.log_error(f"_setup_exp3_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    # ---- exp3 scene primitive helpers --------------------------------------
+
+    @staticmethod
+    def _exp3_make_visual(stage, path, pos, scale, color):
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+
+    @staticmethod
+    def _exp3_make_pivot(stage, path, pos, scale, color):
+        """Kinematic static cube — body0 of the revolute joint."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+        rb = UsdPhysics.RigidBodyAPI.Apply(prim)
+        rb.CreateKinematicEnabledAttr(True)
+
+    def _exp3_build_pendulum_body(self, stage):
+        """Build the compound pendulum rigid body: rod + 4-walled catcher cup.
+
+        Local frame convention:
+          - parent Xform at world (0, 0, PIVOT_HEIGHT − L); CM sits here
+            when the bar hangs straight down (θ=0).
+          - local +Z points from catcher centre up to the pivot.
+          - local +X (once rotated by θ) is the "ball-entering" direction
+            in the world. At rest (θ=0), local +X == world +X.
+
+        The compound colliders are:
+          - rod:       thin square prism along local +Z, length = L
+          - back wall: thin plate on +X face (behind the ball on impact)
+          - left wall: thin plate on +Y face (+Y is the stand-side; OK)
+          - right wall: thin plate on −Y face
+          - floor:     thin plate on −Z face of the cup opening
+
+        The opening points toward local −X, i.e. world −X at rest — which
+        is exactly where the launcher sits and the ball approaches from.
+        """
+        parent_path = EXP3_PENDULUM_PATH
+        L = float(self.exp3_L)
+        t_rod = float(EXP3_ROD_THICKNESS)
+        wx = float(EXP3_CATCHER_W)
+        wh = float(EXP3_CATCHER_H)
+        wt = float(EXP3_CATCHER_WALL_T)
+
+        # Parent Xform at the catcher centre (rest pose). We give it an
+        # identity orient+scale so child local coordinates are physical
+        # meters. PhysX RigidBody is applied here.
+        parent = UsdGeom.Xform.Define(stage, parent_path)
+        xf = UsdGeom.Xformable(parent.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, EXP3_PIVOT_HEIGHT - L))
+        xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+        parent_prim = parent.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(parent_prim)
+        UsdPhysics.MassAPI.Apply(parent_prim)
+        UsdPhysics.MassAPI(parent_prim).CreateMassAttr().Set(float(self.exp3_pend_mass))
+        # Provide an explicit CM override at the local origin (catcher
+        # centre) — this is also the joint-to-CM distance L from the pivot.
+        UsdPhysics.MassAPI(parent_prim).CreateCenterOfMassAttr().Set(Gf.Vec3f(0, 0, 0))
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(parent_prim)
+        rb.CreateSolverPositionIterationCountAttr(EXP3_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP3_SOLVER_VEL_ITERS)
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(0.0)
+        rb.CreateSleepThresholdAttr(0.0)
+        rb.CreateEnableCCDAttr(True)  # critical — ball moves fast on impact
+
+        # --- Child collider cubes (no RigidBodyAPI on children) ----------
+        # Rod: runs from catcher top (local z = +wh/2) up to pivot height
+        # (local z = +L). Its centre is at z = (wh/2 + L)/2, length = L − wh/2.
+        rod_len = max(0.02, L - wh / 2.0)
+        rod_cz = (wh / 2.0 + L) / 2.0
+        self._exp3_child_collider(
+            stage, f"{parent_path}/rod",
+            pos=(0, 0, rod_cz),
+            scale=(t_rod, t_rod, rod_len),
+            color=(0.85, 0.85, 0.88),
+        )
+
+        # Back wall: opposite the opening. At local +X face.
+        self._exp3_child_collider(
+            stage, f"{parent_path}/back",
+            pos=(+wx / 2.0 - wt / 2.0, 0, 0),
+            scale=(wt, wx, wh),
+            color=(0.92, 0.72, 0.42),   # styrofoam-ish
+        )
+        # Left wall (+Y)
+        self._exp3_child_collider(
+            stage, f"{parent_path}/left",
+            pos=(0, +wx / 2.0 - wt / 2.0, 0),
+            scale=(wx, wt, wh),
+            color=(0.92, 0.72, 0.42),
+        )
+        # Right wall (−Y)
+        self._exp3_child_collider(
+            stage, f"{parent_path}/right",
+            pos=(0, -wx / 2.0 + wt / 2.0, 0),
+            scale=(wx, wt, wh),
+            color=(0.92, 0.72, 0.42),
+        )
+        # Floor (−Z), stops ball falling out through the bottom
+        self._exp3_child_collider(
+            stage, f"{parent_path}/floor",
+            pos=(0, 0, -wh / 2.0 + wt / 2.0),
+            scale=(wx, wx, wt),
+            color=(0.82, 0.62, 0.32),
+        )
+        # Thin lip on the top so the ball can't climb out over the top
+        self._exp3_child_collider(
+            stage, f"{parent_path}/top",
+            pos=(0, 0, +wh / 2.0 - wt / 2.0),
+            scale=(wx, wx, wt),
+            color=(0.82, 0.62, 0.32),
+        )
+
+    @staticmethod
+    def _exp3_child_collider(stage, path, pos, scale, color):
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+        col = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+        col.CreateContactOffsetAttr(0.0015)
+        col.CreateRestOffsetAttr(0.0)
+
+    def _exp3_make_ball(self, stage, path, pos, mass, color):
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(EXP3_BALL_SIZE, EXP3_BALL_SIZE, EXP3_BALL_SIZE))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim)
+        UsdPhysics.MassAPI(prim).CreateMassAttr().Set(float(mass))
+
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateSolverPositionIterationCountAttr(EXP3_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP3_SOLVER_VEL_ITERS)
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(0.0)
+        rb.CreateSleepThresholdAttr(0.0)
+        rb.CreateEnableCCDAttr(True)          # fast projectile
+        rb.CreateMaxLinearVelocityAttr(100.0)
+
+        col = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+        col.CreateContactOffsetAttr(0.0015)
+        col.CreateRestOffsetAttr(0.0)
+
+    @staticmethod
+    def _exp3_make_joint(stage, L: float):
+        """Revolute joint around Y so the pendulum swings in XZ.
+
+        body0 = pivot at world (0,0,PIVOT_HEIGHT)          — local (0,0,0)
+        body1 = pendulum parent at world (0,0,PIVOT_HEIGHT−L).
+                Locally, the pivot point is at z=+L above the parent origin
+                (since the parent frame lives at the catcher centre).
+        """
+        jp = stage.GetPrimAtPath(EXP3_JOINT_PATH)
+        if jp and jp.IsValid():
+            stage.RemovePrim(EXP3_JOINT_PATH)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, EXP3_JOINT_PATH)
+        joint.CreateBody0Rel().SetTargets([EXP3_PIVOT_PATH])
+        joint.CreateBody1Rel().SetTargets([EXP3_PENDULUM_PATH])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, float(L)))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Y")
+
+    @staticmethod
+    def _exp3_make_material(stage, path: str, restitution: float,
+                             static_fr: float, dyn_fr: float):
+        mat_prim = stage.GetPrimAtPath(path)
+        if mat_prim and mat_prim.IsValid():
+            api = UsdPhysics.MaterialAPI(mat_prim)
+            api.GetStaticFrictionAttr().Set(float(static_fr))
+            api.GetDynamicFrictionAttr().Set(float(dyn_fr))
+            api.GetRestitutionAttr().Set(float(restitution))
+            return
+        mat = UsdShade.Material.Define(stage, path)
+        UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        api = UsdPhysics.MaterialAPI(mat.GetPrim())
+        api.CreateStaticFrictionAttr().Set(float(static_fr))
+        api.CreateDynamicFrictionAttr().Set(float(dyn_fr))
+        api.CreateRestitutionAttr().Set(float(restitution))
+
+        PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+        phx = PhysxSchema.PhysxMaterialAPI(mat.GetPrim())
+        phx.CreateFrictionCombineModeAttr().Set("max")
+        phx.CreateRestitutionCombineModeAttr().Set("min")
+
+    @staticmethod
+    def _exp3_bind_material(stage, target_path: str, material_path: str):
+        """Bind a PhysicsMaterial to every collider under target_path."""
+        mat_prim = stage.GetPrimAtPath(material_path)
+        tgt_prim = stage.GetPrimAtPath(target_path)
+        if not (mat_prim and mat_prim.IsValid()
+                and tgt_prim and tgt_prim.IsValid()):
+            return
+        if not tgt_prim.HasAPI(UsdShade.MaterialBindingAPI):
+            UsdShade.MaterialBindingAPI.Apply(tgt_prim)
+        UsdShade.MaterialBindingAPI(tgt_prim).Bind(UsdShade.Material(mat_prim))
+        # Also bind each direct child that has a CollisionAPI (compound body)
+        for child in tgt_prim.GetChildren():
+            if child.HasAPI(UsdPhysics.CollisionAPI):
+                if not child.HasAPI(UsdShade.MaterialBindingAPI):
+                    UsdShade.MaterialBindingAPI.Apply(child)
+                UsdShade.MaterialBindingAPI(child).Bind(UsdShade.Material(mat_prim))
+
+    # ---- exp3 dynamics & telemetry helpers ---------------------------------
+
+    async def _fire_exp3_ball(self):
+        """Reset the ball to spawn pose, apply v0 toward +X, start PhysX."""
+        try:
+            if not self.exp3_scene_built:
+                await self._setup_exp3_scene()
+
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            # Reset ball pose
+            catcher_front_x = -EXP3_CATCHER_W / 2.0
+            catcher_z = EXP3_PIVOT_HEIGHT - float(self.exp3_L)
+            ball_x = catcher_front_x - EXP3_BALL_SPAWN_OFFSET
+
+            ball_prim = stage.GetPrimAtPath(EXP3_BALL_PATH)
+            if ball_prim and ball_prim.IsValid():
+                xf = UsdGeom.Xformable(ball_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(ball_x, 0.0, catcher_z))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(EXP3_BALL_SIZE, EXP3_BALL_SIZE, EXP3_BALL_SIZE))
+
+            # Reset pendulum to vertical rest pose
+            pend_prim = stage.GetPrimAtPath(EXP3_PENDULUM_PATH)
+            if pend_prim and pend_prim.IsValid():
+                xf = UsdGeom.Xformable(pend_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, catcher_z))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+
+            # Update masses from current slider values
+            await self._apply_mass_at(EXP3_BALL_PATH, self.exp3_ball_mass)
+            await self._apply_mass_at(EXP3_PENDULUM_PATH, self.exp3_pend_mass)
+
+            # Reset measurement state
+            self.exp3_theta = 0.0
+            self.exp3_omega = 0.0
+            self.exp3_theta_max = 0.0
+            self.exp3_v0_measured = 0.0
+            self.exp3_ball_velocity = 0.0
+            self.exp3_collision_detected = False
+            self.exp3_prev_omega_sign = 0
+            self.exp3_phase = "firing"
+            self.exp3_fire_time = time.time()
+            self.exp3_settle_deadline = self.exp3_fire_time + EXP3_AUTO_SETTLE_SECONDS
+
+            self.simulation_control_enabled = True
+            tl.play()
+            await asyncio.sleep(EXP3_WARMUP_SECONDS)
+
+            # Apply v0 through dynamic_control — PhysX now owns the motion.
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            dc = self._dc_interface
+            h = dc.get_rigid_body(EXP3_BALL_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                dc.set_rigid_body_linear_velocity(h, (float(self.exp3_v0), 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(h, (0.0, 0.0, 0.0))
+            # Pendulum starts at rest
+            ph = dc.get_rigid_body(EXP3_PENDULUM_PATH)
+            if ph != _dynamic_control.INVALID_HANDLE:
+                dc.set_rigid_body_linear_velocity(ph, (0.0, 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(ph, (0.0, 0.0, 0.0))
+
+            carb.log_warn(
+                f"exp3: fired  v0={self.exp3_v0:.2f}  m_ball={self.exp3_ball_mass:.4f}  "
+                f"m_pend={self.exp3_pend_mass:.4f}  L={self.exp3_L:.3f}"
+            )
+        except Exception as exc:
+            carb.log_error(f"_fire_exp3_ball: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    async def _reset_exp3(self):
+        """Return everything to idle (pre-fire) pose without rebuilding."""
+        self.exp3_phase = "idle"
+        self.exp3_theta = 0.0
+        self.exp3_omega = 0.0
+        self.exp3_theta_max = 0.0
+        self.exp3_v0_measured = 0.0
+        self.exp3_ball_velocity = 0.0
+        self.exp3_collision_detected = False
+        self.exp3_prev_omega_sign = 0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            catcher_z = EXP3_PIVOT_HEIGHT - float(self.exp3_L)
+            # Pendulum to vertical
+            pend = stage.GetPrimAtPath(EXP3_PENDULUM_PATH)
+            if pend and pend.IsValid():
+                xf = UsdGeom.Xformable(pend)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, catcher_z))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+            # Ball back to spawn
+            ball = stage.GetPrimAtPath(EXP3_BALL_PATH)
+            if ball and ball.IsValid():
+                catcher_front_x = -EXP3_CATCHER_W / 2.0
+                ball_x = catcher_front_x - EXP3_BALL_SPAWN_OFFSET
+                xf = UsdGeom.Xformable(ball)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(ball_x, 0.0, catcher_z))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(EXP3_BALL_SIZE, EXP3_BALL_SIZE, EXP3_BALL_SIZE))
+        except Exception as exc:
+            carb.log_error(f"_reset_exp3: {exc}")
+
+    def _read_exp3_pendulum_state(self):
+        """Return (theta_rad, omega_rad_s) from the live pendulum pose."""
+        theta = 0.0
+        omega = 0.0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                prim = stage.GetPrimAtPath(EXP3_PENDULUM_PATH)
+                if prim and prim.IsValid():
+                    mtx = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+                    q = mtx.ExtractRotationQuat()
+                    qw = float(q.GetReal())
+                    qy = float(q.GetImaginary()[1])
+                    theta = 2.0 * math.atan2(qy, qw)
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(EXP3_PENDULUM_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_angular_velocity(h)
+                if v:
+                    omega = float(v[1])
+        except Exception:
+            pass
+        return theta, omega
+
+    def _read_exp3_ball_speed(self) -> float:
+        """Return the ball's scalar linear speed (m/s)."""
+        try:
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(EXP3_BALL_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_linear_velocity(h)
+                if v:
+                    return float(math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]))
+        except Exception:
+            pass
+        return 0.0
+
+    def _exp3_update_swing_metrics(self, theta: float, omega: float, now: float):
+        """Track |θ|_max during the upswing and snap v0_measured once ω
+        first crosses zero (⇒ pendulum reached its apex).
+
+        The ballistic pendulum formula:
+            v0 = (m_ball + m_pend) / m_ball · √(2 g L (1 − cos θ_max))
+        Combined momentum + energy conservation, derived in the lab PDF.
+        """
+        abs_theta = abs(theta)
+        if abs_theta > self.exp3_theta_max:
+            self.exp3_theta_max = abs_theta
+
+        # Detect first sign-flip of ω after fire → apex reached → "settled"
+        curr_sign = 1 if omega > 1e-4 else (-1 if omega < -1e-4 else 0)
+        if (self.exp3_phase in ("firing", "swinging") and curr_sign != 0
+                and self.exp3_prev_omega_sign != 0
+                and curr_sign != self.exp3_prev_omega_sign):
+            # ω changed sign — the pendulum is at apex.
+            self.exp3_v0_measured = self._exp3_compute_v0(self.exp3_theta_max)
+            self.exp3_phase = "settled"
+        self.exp3_prev_omega_sign = curr_sign if curr_sign != 0 else self.exp3_prev_omega_sign
+
+        # Phase auto-transition when the ball starts driving the pendulum
+        if self.exp3_phase == "firing" and abs_theta > math.radians(1.5):
+            self.exp3_phase = "swinging"
+            self.exp3_collision_detected = True
+            self.exp3_collision_time = now
+
+        # Safety timeout — never leave the UI stuck
+        if (self.exp3_phase in ("firing", "swinging")
+                and now > self.exp3_settle_deadline):
+            self.exp3_v0_measured = self._exp3_compute_v0(self.exp3_theta_max)
+            self.exp3_phase = "settled"
+
+    def _exp3_compute_v0(self, theta_max: float) -> float:
+        """Ballistic-pendulum inversion: v0 from θmax (Eq. 4 in PDF)."""
+        g = 9.81
+        M = float(self.exp3_ball_mass) + float(self.exp3_pend_mass)
+        L = max(1e-6, float(self.exp3_L))
+        h = L * (1.0 - math.cos(float(theta_max)))
+        if self.exp3_ball_mass <= 1e-9 or h <= 0.0:
+            return 0.0
+        return (M / self.exp3_ball_mass) * math.sqrt(2.0 * g * h)
+
+    # ---- exp3 camera -------------------------------------------------------
+    # Viewed from behind the launcher (−X) and slightly +Y above ground so
+    # the swing plane (y≈0) is visible with the stand peeking from +Y.
+    _EXP3_CAM_EYE = Gf.Vec3d(-0.75, -1.35, 0.70)
+    _EXP3_CAM_TGT = Gf.Vec3d(0.0, 0.0, 0.55)
+    _EXP3_CAM_FL = 22.0
+
+    def _force_exp3_camera(self, stage=None):
+        eye = self._EXP3_CAM_EYE
+        tgt = self._EXP3_CAM_TGT
+        fl = self._EXP3_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+            carb.log_warn(f"exp3 camera: eye={eye} tgt={tgt} fl={fl}")
+        except Exception as exc:
+            carb.log_error(f"_force_exp3_camera: {exc}")
+
+    async def _deferred_exp3_camera(self):
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "3":
+                return
+            self._force_exp3_camera()
+
+    # --- Experiment 5 — physical pendulum (PhysX revolute joint) -----------
+
+    async def _setup_exp5_scene(self):
+        """Build the physical pendulum scene procedurally.
+
+        The bar (uniform rod) is a DynamicCuboid attached to a kinematic pivot
+        via a revolute joint around the **Y-axis**, so gravity (-Z) produces
+        a real torque and the bar swings in the XZ plane.  The original
+        standalone script used a Z-axis joint which, under Z-up gravity,
+        yields no torque and no oscillation — we fix that here.
+
+        Physics:
+            period  T = 2π √((L²/12 + x²) / (g · x))
+            minimum at x = L / √12
+        """
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp5: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, "/World/exp5")
+
+            # Physics scene — standard Earth gravity
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(9.81)
+
+            UsdLux.DomeLight.Define(stage, "/World/exp5/DomeLight").CreateIntensityAttr(1200.0)
+
+            # Ground + grid (visual only, no collision)
+            self._exp5_make_visual(
+                stage, "/World/exp5/ground",
+                pos=(0, 0, EXP5_GROUND_Z),
+                scale=(6.0, 6.0, 0.02),
+                color=(0.12, 0.12, 0.14),
+            )
+            for i, xv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp5_make_visual(
+                    stage, f"/World/exp5/GridX_{i}",
+                    pos=(float(xv), 0, EXP5_GROUND_Z + 0.011),
+                    scale=(0.008, 4.0, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+            for i, yv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp5_make_visual(
+                    stage, f"/World/exp5/GridY_{i}",
+                    pos=(0, float(yv), EXP5_GROUND_Z + 0.011),
+                    scale=(4.0, 0.008, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+
+            # Pivot support — L-bracket offset into +Y so the swing plane (XZ,
+            # at y=0) is never occluded by the stand. A vertical column rises
+            # from the floor at y=+0.10, and a short horizontal arm reaches
+            # back to the pivot at y=0. This matches how a real classroom
+            # pendulum stand holds the pivot from behind.
+            post_top = EXP5_PIVOT_HEIGHT - 0.01
+            post_y = 0.10
+            self._exp5_make_visual(
+                stage, "/World/exp5/post",
+                pos=(0, post_y, (EXP5_GROUND_Z + post_top) / 2.0),
+                scale=(0.04, 0.04, max(0.01, post_top - EXP5_GROUND_Z)),
+                color=(0.30, 0.30, 0.35),
+            )
+            # Horizontal arm: thin cross-bar from post top to pivot (y=0)
+            self._exp5_make_visual(
+                stage, "/World/exp5/post_arm",
+                pos=(0, post_y / 2.0, EXP5_PIVOT_HEIGHT),
+                scale=(0.035, post_y, 0.035),
+                color=(0.30, 0.30, 0.35),
+            )
+            # Small base plate at the post foot for visual stability
+            self._exp5_make_visual(
+                stage, "/World/exp5/post_base",
+                pos=(0, post_y, EXP5_GROUND_Z + 0.015),
+                scale=(0.18, 0.18, 0.025),
+                color=(0.22, 0.22, 0.25),
+            )
+
+            # Kinematic pivot cube (body0 of joint)
+            self._exp5_make_pivot(
+                stage, EXP5_PIVOT_PATH,
+                pos=(0, 0, EXP5_PIVOT_HEIGHT),
+                scale=(0.05, 0.05, 0.05),
+                color=(0.95, 0.75, 0.10),
+            )
+
+            # Dynamic bar (body1 of joint) — hanging straight down at rest.
+            # Bar local frame: long axis = Z (length = L), cross-section in XY.
+            # CM placed at pivot height − x, so joint-to-CM distance = x.
+            bar_cm_z = EXP5_PIVOT_HEIGHT - self.exp5_x
+            self._exp5_make_bar(
+                stage, EXP5_BAR_PATH,
+                pos=(0, 0, bar_cm_z),
+                scale=(EXP5_BAR_THICKNESS, EXP5_BAR_THICKNESS, self.exp5_L),
+                mass=self.exp5_m,
+                color=(0.20, 0.60, 1.00),
+            )
+
+            # Revolute joint (Y-axis) — swings in XZ plane
+            self._exp5_make_joint(stage, self.exp5_x)
+
+            # Frictionless physics material (no energy loss from contacts)
+            self._exp5_make_material(stage)
+            mat = stage.GetPrimAtPath(EXP5_MATERIAL_PATH)
+            bar_prim = stage.GetPrimAtPath(EXP5_BAR_PATH)
+            if mat and mat.IsValid() and bar_prim and bar_prim.IsValid():
+                if not bar_prim.HasAPI(UsdShade.MaterialBindingAPI):
+                    UsdShade.MaterialBindingAPI.Apply(bar_prim)
+                UsdShade.MaterialBindingAPI(bar_prim).Bind(UsdShade.Material(mat))
+
+            self.exp5_scene_built = True
+            self.exp5_phase = "idle"
+            self.exp5_theta = 0.0
+            self.exp5_omega = 0.0
+            self.exp5_measured_period = 0.0
+            self.exp5_period_samples = []
+            self.exp5_pos_zero_crossings = []
+            self.exp5_prev_theta_sign = 1
+
+            for _ in range(8):
+                await app.next_update_async()
+
+            self._force_exp5_camera(stage)
+            carb.log_warn(
+                f"exp5: scene built  m={self.exp5_m:.3f}  L={self.exp5_L:.3f}  "
+                f"x={self.exp5_x:.3f}  θ₀={self.exp5_theta0_deg:.1f}°"
+            )
+        except Exception as exc:
+            carb.log_error(f"_setup_exp5_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    @staticmethod
+    def _exp5_make_visual(stage, path, pos, scale, color):
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+
+    @staticmethod
+    def _exp5_make_pivot(stage, path, pos, scale, color):
+        """Kinematic static cube acting as body0 of the revolute joint."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+        rb = UsdPhysics.RigidBodyAPI.Apply(prim)
+        rb.CreateKinematicEnabledAttr(True)
+
+    @staticmethod
+    def _exp5_make_bar(stage, path, pos, scale, mass, color):
+        """Dynamic rigid body — the swinging bar.
+
+        Initial orientation = identity (bar hangs straight down along its local
+        Z-axis).  A small initial angle is applied on `start_simulation` by
+        rewriting the xform and letting PhysX pick up the new default pose.
+        """
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim)
+        UsdPhysics.MassAPI(prim).CreateMassAttr().Set(float(mass))
+
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateSolverPositionIterationCountAttr(EXP5_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP5_SOLVER_VEL_ITERS)
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(0.0)
+        rb.CreateSleepThresholdAttr(0.0)
+
+    @staticmethod
+    def _exp5_make_joint(stage, pivot_distance_x: float):
+        """Revolute joint around Y so the bar swings in the vertical XZ plane.
+
+        localPos0 = (0, 0, 0)        joint point at pivot's centre (body0)
+        localPos1 = (0, 0, +x)       in bar's local frame, the point that
+                                     sits x metres above the bar's CM along
+                                     its local Z — coincides with the pivot.
+        """
+        jp = stage.GetPrimAtPath(EXP5_JOINT_PATH)
+        if jp and jp.IsValid():
+            stage.RemovePrim(EXP5_JOINT_PATH)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, EXP5_JOINT_PATH)
+        joint.CreateBody0Rel().SetTargets([EXP5_PIVOT_PATH])
+        joint.CreateBody1Rel().SetTargets([EXP5_BAR_PATH])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, float(pivot_distance_x)))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Y")
+
+    @staticmethod
+    def _exp5_make_material(stage):
+        mat_prim = stage.GetPrimAtPath(EXP5_MATERIAL_PATH)
+        if mat_prim and mat_prim.IsValid():
+            return
+        mat = UsdShade.Material.Define(stage, EXP5_MATERIAL_PATH)
+        UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        api = UsdPhysics.MaterialAPI(mat.GetPrim())
+        api.CreateStaticFrictionAttr().Set(0.0)
+        api.CreateDynamicFrictionAttr().Set(0.0)
+        api.CreateRestitutionAttr().Set(0.0)
+
+    async def _start_exp5_sim(self):
+        """Apply current initial angle θ₀ and start the timeline."""
+        try:
+            if not self.exp5_scene_built:
+                await self._setup_exp5_scene()
+
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            # Rewrite the bar's default pose so PhysX reads the perturbed
+            # initial angle on timeline play.
+            theta0 = math.radians(float(self.exp5_theta0_deg))
+            x = float(self.exp5_x)
+            L = float(self.exp5_L)
+            t = float(EXP5_BAR_THICKNESS)
+            pivot_z = float(EXP5_PIVOT_HEIGHT)
+
+            # Rest CM is at (0, 0, pivot_z − x); rotation around Y by θ₀
+            # moves it to (−x·sinθ, 0, pivot_z − x·cosθ).
+            cm = (-x * math.sin(theta0), 0.0, pivot_z - x * math.cos(theta0))
+            q = Gf.Quatf(math.cos(theta0 / 2.0), 0.0, math.sin(theta0 / 2.0), 0.0)
+
+            bar_prim = stage.GetPrimAtPath(EXP5_BAR_PATH)
+            if bar_prim and bar_prim.IsValid():
+                xf = UsdGeom.Xformable(bar_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(*cm))
+                xf.AddOrientOp().Set(q)
+                xf.AddScaleOp().Set(Gf.Vec3f(t, t, L))
+
+            # Update bar mass in case the slider moved
+            await self._apply_mass_at(EXP5_BAR_PATH, self.exp5_m)
+
+            # Reset derived state
+            self.exp5_theta = theta0
+            self.exp5_omega = 0.0
+            self.exp5_measured_period = 0.0
+            self.exp5_period_samples = []
+            self.exp5_pos_zero_crossings = []
+            self.exp5_prev_theta_sign = 1 if theta0 >= 0 else -1
+            self.exp5_sim_start_time = time.time()
+            self.exp5_phase = "running"
+
+            self.simulation_control_enabled = True
+            tl.play()
+            carb.log_warn(
+                f"exp5: started  θ₀={self.exp5_theta0_deg:.2f}°  "
+                f"T_theory={self._exp5_T_theory():.4f}s"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp5_sim: {exc}")
+
+    async def _reset_exp5(self):
+        """Return the pendulum to its rest pose and stop motion."""
+        self.exp5_phase = "idle"
+        self.exp5_theta = 0.0
+        self.exp5_omega = 0.0
+        self.exp5_measured_period = 0.0
+        self.exp5_period_samples = []
+        self.exp5_pos_zero_crossings = []
+        self.exp5_prev_theta_sign = 1
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            bar_prim = stage.GetPrimAtPath(EXP5_BAR_PATH)
+            if bar_prim and bar_prim.IsValid():
+                xf = UsdGeom.Xformable(bar_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(
+                    Gf.Vec3d(0.0, 0.0, EXP5_PIVOT_HEIGHT - self.exp5_x)
+                )
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(
+                    Gf.Vec3f(EXP5_BAR_THICKNESS, EXP5_BAR_THICKNESS, self.exp5_L)
+                )
+        except Exception as exc:
+            carb.log_error(f"_reset_exp5: {exc}")
+
+    def _exp5_T_theory(self) -> float:
+        """Small-amplitude theoretical period T = 2π √((L²/12 + x²) / (g x))."""
+        g = 9.81
+        L = max(1e-6, float(self.exp5_L))
+        x = max(1e-6, float(self.exp5_x))
+        I_over_mx = (L * L / 12.0 + x * x) / x
+        return float(2.0 * math.pi * math.sqrt(I_over_mx / g))
+
+    def _exp5_x_min_period(self) -> float:
+        """Pivot distance giving the minimum period (x = L / √12)."""
+        return float(self.exp5_L) / math.sqrt(12.0)
+
+    def _read_exp5_state(self):
+        """Return (theta_rad, omega_rad_s) from the bar's live pose.
+
+        theta is the rotation angle about the Y-axis (0 = straight down).
+        """
+        theta = 0.0
+        omega = 0.0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                prim = stage.GetPrimAtPath(EXP5_BAR_PATH)
+                if prim and prim.IsValid():
+                    mtx = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+                    q = mtx.ExtractRotationQuat()
+                    qw = float(q.GetReal())
+                    qi = q.GetImaginary()
+                    qy = float(qi[1])
+                    theta = 2.0 * math.atan2(qy, qw)
+            # Angular velocity via dynamic_control
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(EXP5_BAR_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_angular_velocity(h)
+                if v:
+                    omega = float(v[1])
+        except Exception:
+            pass
+        return theta, omega
+
+    def _exp5_update_period_measurement(self, theta: float, sim_time: float):
+        """Zero-crossing period estimator (same logic as exp2)."""
+        curr_sign = 1 if theta >= 0 else -1
+        if curr_sign > 0 and self.exp5_prev_theta_sign <= 0:
+            self.exp5_pos_zero_crossings.append(sim_time)
+            if len(self.exp5_pos_zero_crossings) >= 2:
+                latest_p = (self.exp5_pos_zero_crossings[-1]
+                            - self.exp5_pos_zero_crossings[-2])
+                if 0.1 < latest_p < 10.0:
+                    self.exp5_period_samples.append(latest_p)
+                    if len(self.exp5_period_samples) > 5:
+                        self.exp5_period_samples.pop(0)
+                    self.exp5_measured_period = (
+                        sum(self.exp5_period_samples)
+                        / len(self.exp5_period_samples)
+                    )
+        self.exp5_prev_theta_sign = curr_sign
+
+    # --- Exp5 camera -------------------------------------------------------
+
+    # Viewed from the "back" of the stand (-Y side). The support bracket is
+    # offset to +Y, so from -Y the swinging bar (at y≈0) sits in front and
+    # the stand sits behind it, out of the way. Slight +X offset + elevated
+    # eye gives a three-quarter angle that reads as a proper pendulum view.
+    _EXP5_CAM_EYE = Gf.Vec3d(0.35, -1.25, 0.70)
+    _EXP5_CAM_TGT = Gf.Vec3d(0.0, 0.0, 0.50)
+    _EXP5_CAM_FL = 20.0
+
+    def _force_exp5_camera(self, stage=None):
+        """Position the viewport camera to watch the pendulum swing in XZ."""
+        eye = self._EXP5_CAM_EYE
+        tgt = self._EXP5_CAM_TGT
+        fl = self._EXP5_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+            carb.log_warn(f"exp5 camera: eye={eye} tgt={tgt} fl={fl}")
+        except Exception as exc:
+            carb.log_error(f"_force_exp5_camera: {exc}")
+
+    async def _deferred_exp5_camera(self):
+        """Re-apply exp5 camera after stage init settles."""
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "5":
+                return
+            self._force_exp5_camera()
+
+    # --- Experiment 4 — driven damped torsional oscillator (PhysX drive) ----
+    #
+    # Physical model (solved by PhysX, not by closed-form formulas):
+    #     I·θ̈ + b·θ̇ + κ·θ = κ·A_drive·sin(ω_d·t)
+    #
+    # Implementation:
+    #     • Dynamic disk rotates about Z via a RevoluteJoint to a kinematic
+    #       pivot cube. MassAPI overrides the inertia tensor so the body
+    #       behaves as a true aluminium disk (I_z = ½MR²).
+    #     • UsdPhysics.DriveAPI (angular, type="force") on the joint gives
+    #       stiffness = κ, damping = b → PhysX applies -κθ -bθ̇ every sub-step.
+    #     • A lightweight async task updates targetPosition =
+    #       A_drive·sin(ω_d·t); PhysX then also applies +κ·target, which is
+    #       exactly the sinusoidal driving torque τ₀·sin(ωt) with τ₀ = κ·A.
+    #     • A visual driver arm rotates synchronously for feedback.
+    #
+    # Unit conversion: USD revolute-joint DriveAPI uses DEGREES for position
+    # and deg/s for velocity, so stiffness/damping must be scaled by π/180
+    # (stiffness_usd = κ_SI · π/180 in N·m/deg, etc.).
+
+    _EXP4_DEG_PER_RAD = 180.0 / math.pi
+    _EXP4_RAD_PER_DEG = math.pi / 180.0
+
+    async def _setup_exp4_scene(self):
+        """Build the driven-damped torsional oscillator scene procedurally."""
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp4: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, "/World/exp4")
+
+            # Physics scene — gravity is irrelevant because the disk rotates
+            # about its own Z axis and the joint constrains all translations.
+            # Keep a small g to match the rest of the platform (prevents NaN
+            # if a user switches scenes mid-play).
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(9.81)
+
+            UsdLux.DomeLight.Define(stage, "/World/exp4/DomeLight").CreateIntensityAttr(1200.0)
+
+            # Ground + grid (visual only — no collision)
+            self._exp4_make_visual(
+                stage, "/World/exp4/ground",
+                pos=(0, 0, EXP4_GROUND_Z),
+                scale=(6.0, 6.0, 0.02),
+                color=(0.12, 0.12, 0.14),
+            )
+            for i, xv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp4_make_visual(
+                    stage, f"/World/exp4/GridX_{i}",
+                    pos=(float(xv), 0, EXP4_GROUND_Z + 0.011),
+                    scale=(0.008, 4.0, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+            for i, yv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp4_make_visual(
+                    stage, f"/World/exp4/GridY_{i}",
+                    pos=(0, float(yv), EXP4_GROUND_Z + 0.011),
+                    scale=(4.0, 0.008, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+
+            # Support stand + mounting column (visual only)
+            self._exp4_make_visual(
+                stage, "/World/exp4/base_plate",
+                pos=(0, 0.25, EXP4_GROUND_Z + 0.015),
+                scale=(0.35, 0.20, 0.025),
+                color=(0.22, 0.22, 0.25),
+            )
+            column_top = EXP4_PIVOT_HEIGHT - 0.01
+            column_z = (EXP4_GROUND_Z + column_top) / 2.0
+            column_h = max(0.01, column_top - EXP4_GROUND_Z)
+            self._exp4_make_visual(
+                stage, "/World/exp4/stand_column",
+                pos=(0, 0.22, column_z),
+                scale=(0.05, 0.05, column_h),
+                color=(0.30, 0.30, 0.35),
+            )
+            # Horizontal arm reaching from the column to the pivot at (0,0,H)
+            self._exp4_make_visual(
+                stage, "/World/exp4/stand_arm",
+                pos=(0, 0.11, EXP4_PIVOT_HEIGHT),
+                scale=(0.04, 0.22, 0.04),
+                color=(0.30, 0.30, 0.35),
+            )
+
+            # Kinematic pivot (body0 of the revolute joint)
+            self._exp4_make_pivot(
+                stage, EXP4_PIVOT_PATH,
+                pos=(0, 0, EXP4_PIVOT_HEIGHT),
+                scale=(0.03, 0.03, 0.03),
+                color=(0.95, 0.75, 0.10),
+            )
+
+            # Dynamic aluminium disk (body1) — rotates freely about Z.
+            #   visual: flat square plate (scale = 2R × 2R × thickness)
+            #   physics: explicit diagonal inertia I_z = ½MR² (thin disk)
+            R = EXP4_DISK_RADIUS
+            self._exp4_make_disk(
+                stage, EXP4_DISK_PATH,
+                pos=(0, 0, EXP4_PIVOT_HEIGHT),
+                scale=(2.0 * R, 2.0 * R, EXP4_DISK_THICKNESS),
+                mass=self.exp4_disk_mass,
+                radius=R,
+                color=(0.72, 0.74, 0.80),
+            )
+
+            # Visual "driver arm" — a thin rod above the disk that rotates
+            # synchronously with target_position, giving the user a visible
+            # reference to see phase lag at a glance.
+            driver_arm = UsdGeom.Xform.Define(stage, EXP4_DRIVER_ARM_PATH)
+            xf = UsdGeom.Xformable(driver_arm.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(
+                Gf.Vec3d(0.0, 0.0, EXP4_PIVOT_HEIGHT + 0.015)
+            )
+            self._exp4_drive_arm_op = xf.AddRotateZOp()
+            self._exp4_drive_arm_op.Set(0.0)
+            # Arm body (thin horizontal bar)
+            self._exp4_make_visual(
+                stage, EXP4_DRIVER_ARM_PATH + "/bar",
+                pos=(0.0, 0.0, 0.008),
+                scale=(2.2 * R, 0.010, 0.006),
+                color=(0.95, 0.30, 0.10),
+            )
+            # Arm end markers
+            self._exp4_make_visual(
+                stage, EXP4_DRIVER_ARM_PATH + "/end_right",
+                pos=(1.05 * R, 0.0, 0.008),
+                scale=(0.018, 0.018, 0.018),
+                color=(1.00, 0.55, 0.10),
+            )
+            self._exp4_make_visual(
+                stage, EXP4_DRIVER_ARM_PATH + "/end_left",
+                pos=(-1.05 * R, 0.0, 0.008),
+                scale=(0.018, 0.018, 0.018),
+                color=(1.00, 0.55, 0.10),
+            )
+
+            # Two decorative springs running from the disk rim outward — they
+            # model the visible two-spring setup from the PASCO lab but do
+            # not participate in physics (the PhysX drive reproduces their
+            # combined torque exactly).
+            self._exp4_make_visual(
+                stage, "/World/exp4/spring_right",
+                pos=(R + 0.10, 0.0, EXP4_PIVOT_HEIGHT),
+                scale=(0.18, 0.012, 0.012),
+                color=(0.55, 0.55, 0.60),
+            )
+            self._exp4_make_visual(
+                stage, "/World/exp4/spring_left",
+                pos=(-R - 0.10, 0.0, EXP4_PIVOT_HEIGHT),
+                scale=(0.18, 0.012, 0.012),
+                color=(0.55, 0.55, 0.60),
+            )
+            # Magnetic damper block (decorative, sits near disk rim)
+            self._exp4_make_visual(
+                stage, "/World/exp4/magnet",
+                pos=(0.0, -R - 0.035, EXP4_PIVOT_HEIGHT),
+                scale=(0.03, 0.04, 0.04),
+                color=(0.15, 0.15, 0.18),
+            )
+
+            # Revolute joint (Z axis) + angular DriveAPI
+            self._exp4_make_joint(stage)
+            self._exp4_make_material(stage)
+            mat = stage.GetPrimAtPath(EXP4_MATERIAL_PATH)
+            disk_prim = stage.GetPrimAtPath(EXP4_DISK_PATH)
+            if mat and mat.IsValid() and disk_prim and disk_prim.IsValid():
+                if not disk_prim.HasAPI(UsdShade.MaterialBindingAPI):
+                    UsdShade.MaterialBindingAPI.Apply(disk_prim)
+                UsdShade.MaterialBindingAPI(disk_prim).Bind(UsdShade.Material(mat))
+
+            self._apply_exp4_drive_params()
+
+            self.exp4_scene_built = True
+            self.exp4_phase = "idle"
+            self.exp4_theta = 0.0
+            self.exp4_omega = 0.0
+            self.exp4_theta_drive = 0.0
+            self.exp4_peak_amp = 0.0
+
+            for _ in range(8):
+                await app.next_update_async()
+
+            self._force_exp4_camera(stage)
+            carb.log_warn(
+                f"exp4: scene built  κ={self.exp4_spring_k:.5f} N·m/rad  "
+                f"γ=b/I={self.exp4_damping_gamma:.3f}/s  "
+                f"A={self.exp4_drive_amp:.3f} rad  f={self.exp4_frequency:.3f} Hz  "
+                f"ω₀={math.sqrt(self.exp4_spring_k / self._exp4_I()):.3f} rad/s"
+            )
+        except Exception as exc:
+            carb.log_error(f"_setup_exp4_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    @staticmethod
+    def _exp4_make_visual(stage, path, pos, scale, color):
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+
+    @staticmethod
+    def _exp4_make_pivot(stage, path, pos, scale, color):
+        """Kinematic static cube acting as body0 of the revolute joint."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        rb = UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+        rb.CreateKinematicEnabledAttr(True)
+
+    @staticmethod
+    def _exp4_make_disk(stage, path, pos, scale, mass, radius, color):
+        """Dynamic thin-disk rigid body with explicit disk inertia tensor.
+
+        A cuboid of side (2R,2R,t) with uniform density has I_zz =
+        (1/6)·M·(2R)² = (2/3)·M·R² — nearly 33 % too large for the real
+        disk result I_zz = ½·M·R². We override the inertia tensor via
+        MassAPI.CreateDiagonalInertiaAttr so PhysX treats the body exactly
+        like a thin disk:
+
+            I_axial     = ½ M R²          (about spin axis, Z)
+            I_transverse = ¼ M R² + 1/12 M t²  (about X, Y)
+        """
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim)
+        mass_api = UsdPhysics.MassAPI(prim)
+        mass_api.CreateMassAttr().Set(float(mass))
+
+        I_axial = 0.5 * float(mass) * float(radius) ** 2
+        t = float(scale[2])
+        I_trans = 0.25 * float(mass) * float(radius) ** 2 + (1.0 / 12.0) * float(mass) * t * t
+        mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(I_trans, I_trans, I_axial))
+        mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateSolverPositionIterationCountAttr(EXP4_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP4_SOLVER_VEL_ITERS)
+        # PhysX built-in damping OFF — all damping comes from the joint drive
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(0.0)
+        rb.CreateSleepThresholdAttr(0.0)
+        # Lock translation + non-spin rotations so the disk is effectively
+        # a pure 1-DOF body. (The revolute joint already does this, but the
+        # locks guarantee numerical stability if PhysX drifts at high ω.)
+        rb.CreateLockedPosAxisAttr().Set(7)       # bitmask: 1|2|4 = X|Y|Z
+        rb.CreateLockedRotAxisAttr().Set(3)       # lock X & Y rotation
+
+    @staticmethod
+    def _exp4_make_joint(stage):
+        """Revolute joint around +Z so the disk spins in the XY plane."""
+        jp = stage.GetPrimAtPath(EXP4_JOINT_PATH)
+        if jp and jp.IsValid():
+            stage.RemovePrim(EXP4_JOINT_PATH)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, EXP4_JOINT_PATH)
+        joint.CreateBody0Rel().SetTargets([EXP4_PIVOT_PATH])
+        joint.CreateBody1Rel().SetTargets([EXP4_DISK_PATH])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+        # Generous rotation range (disk never hits stops in practice).
+        joint.CreateLowerLimitAttr().Set(-1e9)
+        joint.CreateUpperLimitAttr().Set(1e9)
+
+        # Angular drive: stiffness = κ (spring), damping = b (magnet brake)
+        UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "angular")
+        drive = UsdPhysics.DriveAPI(joint.GetPrim(), "angular")
+        drive.CreateTypeAttr().Set("force")
+        drive.CreateTargetPositionAttr().Set(0.0)     # degrees
+        drive.CreateTargetVelocityAttr().Set(0.0)
+        drive.CreateMaxForceAttr().Set(1.0e9)
+        drive.CreateStiffnessAttr().Set(0.0)
+        drive.CreateDampingAttr().Set(0.0)
+
+    @staticmethod
+    def _exp4_make_material(stage):
+        mat_prim = stage.GetPrimAtPath(EXP4_MATERIAL_PATH)
+        if mat_prim and mat_prim.IsValid():
+            return
+        mat = UsdShade.Material.Define(stage, EXP4_MATERIAL_PATH)
+        UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        api = UsdPhysics.MaterialAPI(mat.GetPrim())
+        api.CreateStaticFrictionAttr().Set(0.0)
+        api.CreateDynamicFrictionAttr().Set(0.0)
+        api.CreateRestitutionAttr().Set(0.0)
+
+    def _exp4_I(self) -> float:
+        """Disk spin-axis moment of inertia I_zz = ½ M R²."""
+        return 0.5 * float(self.exp4_disk_mass) * float(self.exp4_disk_radius) ** 2
+
+    def _apply_exp4_drive_params(self) -> None:
+        """Push current κ, b onto the revolute-joint angular drive.
+
+        USD DriveAPI on a revolute joint works in **degrees**, so both
+        stiffness and damping must be scaled by (π/180) to match the SI
+        equation of motion.
+        """
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            joint_prim = stage.GetPrimAtPath(EXP4_JOINT_PATH)
+            if not (joint_prim and joint_prim.IsValid()):
+                return
+            drive = UsdPhysics.DriveAPI(joint_prim, "angular")
+            I = self._exp4_I()
+            b_SI = float(self.exp4_damping_gamma) * I
+            stiffness_usd = float(self.exp4_spring_k) * self._EXP4_RAD_PER_DEG
+            damping_usd = b_SI * self._EXP4_RAD_PER_DEG
+            drive.GetStiffnessAttr().Set(stiffness_usd)
+            drive.GetDampingAttr().Set(damping_usd)
+            # Cache handle so the driver task doesn't pay the prim lookup cost
+            self._exp4_drive_target_attr = drive.GetTargetPositionAttr()
+        except Exception as exc:
+            carb.log_error(f"_apply_exp4_drive_params: {exc}")
+
+    async def _start_exp4_sim(self):
+        """Apply current params, reset pose, and start the sinusoidal driver."""
+        try:
+            if not self.exp4_scene_built:
+                await self._setup_exp4_scene()
+
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            # Reset the disk to θ=0, ω=0 by rewriting its xform.
+            disk_prim = stage.GetPrimAtPath(EXP4_DISK_PATH)
+            if disk_prim and disk_prim.IsValid():
+                xf = UsdGeom.Xformable(disk_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, EXP4_PIVOT_HEIGHT))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(
+                    2.0 * EXP4_DISK_RADIUS,
+                    2.0 * EXP4_DISK_RADIUS,
+                    EXP4_DISK_THICKNESS,
+                ))
+
+            self._apply_exp4_drive_params()
+            # Mass may have changed since last build
+            await self._apply_mass_at(EXP4_DISK_PATH, self.exp4_disk_mass)
+
+            # Cancel any previous driver task
+            if self.exp4_drive_task and not self.exp4_drive_task.done():
+                self.exp4_drive_task.cancel()
+
+            self.exp4_theta = 0.0
+            self.exp4_omega = 0.0
+            self.exp4_theta_drive = 0.0
+            self.exp4_peak_amp = 0.0
+            self.exp4_sim_start_time = time.time()
+            self.exp4_phase = "running"
+            self.simulation_control_enabled = True
+
+            tl.play()
+            self.exp4_drive_task = asyncio.ensure_future(self._run_exp4_drive_loop())
+
+            carb.log_warn(
+                f"exp4: started   f={self.exp4_frequency:.3f} Hz  "
+                f"A={self.exp4_drive_amp:.3f} rad  γ={self.exp4_damping_gamma:.3f}/s  "
+                f"κ={self.exp4_spring_k:.5f}  Q={self._exp4_Q():.2f}"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp4_sim: {exc}")
+
+    async def _start_exp4_free_oscillation(self):
+        """Free-oscillation test (PDF procedure #1 & #5).
+
+        Sets drive amplitude → 0 so the driver supplies no torque, then
+        perturbs the disk by a small initial angular velocity. The disk
+        rings down at ω_d = √(ω₀² − γ²/4), whose period is the undamped
+        natural period to <1 % for small γ.
+        """
+        try:
+            if not self.exp4_scene_built:
+                await self._setup_exp4_scene()
+
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            disk_prim = stage.GetPrimAtPath(EXP4_DISK_PATH)
+            if disk_prim and disk_prim.IsValid():
+                xf = UsdGeom.Xformable(disk_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, EXP4_PIVOT_HEIGHT))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(
+                    2.0 * EXP4_DISK_RADIUS,
+                    2.0 * EXP4_DISK_RADIUS,
+                    EXP4_DISK_THICKNESS,
+                ))
+
+            # Drive OFF but spring + damping ON
+            self._apply_exp4_drive_params()
+            if self._exp4_drive_target_attr is not None:
+                self._exp4_drive_target_attr.Set(0.0)
+
+            if self.exp4_drive_task and not self.exp4_drive_task.done():
+                self.exp4_drive_task.cancel()
+
+            self.exp4_theta = 0.0
+            self.exp4_omega = 0.0
+            self.exp4_theta_drive = 0.0
+            self.exp4_peak_amp = 0.0
+            self.exp4_sim_start_time = time.time()
+            self.exp4_phase = "free"
+            self.simulation_control_enabled = True
+
+            tl.play()
+            # Let timeline pick up the pose, then kick the disk.
+            await asyncio.sleep(0.05)
+            try:
+                from omni.isaac.dynamic_control import _dynamic_control
+                if self._dc_interface is None:
+                    self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+                h = self._dc_interface.get_rigid_body(EXP4_DISK_PATH)
+                if h != _dynamic_control.INVALID_HANDLE:
+                    # Kick that yields ≈ 0.5 rad amplitude at ω₀
+                    omega_kick = math.sqrt(max(1e-6, self.exp4_spring_k / self._exp4_I())) * 0.5
+                    self._dc_interface.set_rigid_body_angular_velocity(
+                        h, (0.0, 0.0, float(omega_kick))
+                    )
+            except Exception as exc:
+                carb.log_error(f"exp4 free-osc kick: {exc}")
+
+            carb.log_warn(
+                f"exp4: FREE oscillation   ω₀={math.sqrt(self.exp4_spring_k / self._exp4_I()):.3f} rad/s"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp4_free_oscillation: {exc}")
+
+    async def _reset_exp4(self):
+        """Stop driver, return disk to rest."""
+        self.exp4_phase = "idle"
+        if self.exp4_drive_task and not self.exp4_drive_task.done():
+            self.exp4_drive_task.cancel()
+            self.exp4_drive_task = None
+        self.exp4_theta = 0.0
+        self.exp4_omega = 0.0
+        self.exp4_theta_drive = 0.0
+        self.exp4_peak_amp = 0.0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            if self._exp4_drive_target_attr is not None:
+                self._exp4_drive_target_attr.Set(0.0)
+            if self._exp4_drive_arm_op is not None:
+                self._exp4_drive_arm_op.Set(0.0)
+            disk_prim = stage.GetPrimAtPath(EXP4_DISK_PATH)
+            if disk_prim and disk_prim.IsValid():
+                xf = UsdGeom.Xformable(disk_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, EXP4_PIVOT_HEIGHT))
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(Gf.Vec3f(
+                    2.0 * EXP4_DISK_RADIUS,
+                    2.0 * EXP4_DISK_RADIUS,
+                    EXP4_DISK_THICKNESS,
+                ))
+        except Exception as exc:
+            carb.log_error(f"_reset_exp4: {exc}")
+
+    async def _run_exp4_drive_loop(self):
+        """Update the joint drive's target_position to A·sin(ω_d·t).
+
+        This is the *only* per-tick work the server has to do — PhysX
+        takes care of integrating κ, b, and the driving torque at its
+        internal sub-step rate (typically 240 Hz).
+        """
+        dt = 1.0 / max(30.0, EXP4_DRIVER_UPDATE_HZ)
+        try:
+            while self.exp4_phase == "running":
+                if not self.ws_clients:
+                    # Still drive — user may open the UI later — but sleep
+                    # longer to conserve CPU.
+                    await asyncio.sleep(dt)
+                    continue
+                sim_time = time.time() - self.exp4_sim_start_time
+                omega_d = 2.0 * math.pi * float(self.exp4_frequency)
+                A_rad = float(self.exp4_drive_amp)
+                theta_drive_rad = A_rad * math.sin(omega_d * sim_time)
+                self.exp4_theta_drive = theta_drive_rad
+                target_deg = theta_drive_rad * self._EXP4_DEG_PER_RAD
+                if self._exp4_drive_target_attr is not None:
+                    try:
+                        self._exp4_drive_target_attr.Set(float(target_deg))
+                    except Exception:
+                        pass
+                if self._exp4_drive_arm_op is not None:
+                    try:
+                        self._exp4_drive_arm_op.Set(float(target_deg))
+                    except Exception:
+                        pass
+                await asyncio.sleep(dt)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            carb.log_error(f"_run_exp4_drive_loop: {exc}")
+
+    def _read_exp4_state(self) -> tuple:
+        """Return (theta_rad, omega_rad_s) of the disk (about Z).
+
+        Theta is pulled from the USD pose quaternion and unwrapped modulo
+        2π; omega comes from the dynamic_control angular-velocity readback.
+        """
+        theta = 0.0
+        omega = 0.0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                prim = stage.GetPrimAtPath(EXP4_DISK_PATH)
+                if prim and prim.IsValid():
+                    mtx = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+                    q = mtx.ExtractRotationQuat()
+                    qw = float(q.GetReal())
+                    qi = q.GetImaginary()
+                    qz = float(qi[2])
+                    theta = 2.0 * math.atan2(qz, qw)
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            h = self._dc_interface.get_rigid_body(EXP4_DISK_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_angular_velocity(h)
+                if v:
+                    omega = float(v[2])
+        except Exception:
+            pass
+        return theta, omega
+
+    def _exp4_update_peak(self, theta: float) -> None:
+        """Exponentially-decaying peak-hold on |θ| (rad)."""
+        abs_theta = abs(float(theta))
+        if abs_theta > self.exp4_peak_amp:
+            self.exp4_peak_amp = abs_theta
+        else:
+            # Slow decay so the peak tracks amplitude changes when the
+            # drive frequency is swept.
+            self.exp4_peak_amp *= float(self.exp4_peak_decay)
+
+    # --- Analytical derived quantities (shown on UI, not used by PhysX) -----
+
+    def _exp4_natural_freq_hz(self) -> float:
+        """f₀ = (1/2π)·√(κ/I)."""
+        I = self._exp4_I()
+        return float(math.sqrt(max(0.0, self.exp4_spring_k) / max(1e-12, I)) / (2.0 * math.pi))
+
+    def _exp4_Q(self) -> float:
+        """Quality factor Q = √(κI) / b = ω₀/(2γ)."""
+        I = self._exp4_I()
+        b = float(self.exp4_damping_gamma) * I
+        num = math.sqrt(max(0.0, self.exp4_spring_k) * max(0.0, I))
+        if b < 1e-12:
+            return float("inf")
+        return float(num / b)
+
+    def _exp4_theory_amplitude(self) -> float:
+        """Steady-state amplitude θ₀(ω) from closed-form (for reference).
+
+            θ₀ = (κ·A / I) / √((ω²−ω₀²)² + (bω/I)²)
+        """
+        I = self._exp4_I()
+        if I <= 0.0:
+            return 0.0
+        w = 2.0 * math.pi * float(self.exp4_frequency)
+        w0_sq = float(self.exp4_spring_k) / I
+        b_over_I = float(self.exp4_damping_gamma)
+        num = (float(self.exp4_spring_k) / I) * float(self.exp4_drive_amp)
+        denom = math.sqrt((w * w - w0_sq) ** 2 + (b_over_I * w) ** 2)
+        if denom < 1e-12:
+            return 0.0
+        return float(num / denom)
+
+    def _exp4_theory_phase_deg(self) -> float:
+        """Phase lag of disk w.r.t. driver, φ = atan2(ω·γ, ω₀²−ω²)   [deg]."""
+        I = self._exp4_I()
+        if I <= 0.0:
+            return 0.0
+        w = 2.0 * math.pi * float(self.exp4_frequency)
+        w0_sq = float(self.exp4_spring_k) / I
+        return float(math.degrees(math.atan2(float(self.exp4_damping_gamma) * w, w0_sq - w * w)))
+
+    # --- Exp4 camera --------------------------------------------------------
+
+    # A slight elevation + a rotation offset so both the disk face and the
+    # overhead driver arm are visible in the same shot.
+    _EXP4_CAM_EYE = Gf.Vec3d(0.45, -0.55, 0.78)
+    _EXP4_CAM_TGT = Gf.Vec3d(0.0, 0.0, EXP4_PIVOT_HEIGHT)
+    _EXP4_CAM_FL = 22.0
+
+    def _force_exp4_camera(self, stage=None):
+        eye = self._EXP4_CAM_EYE
+        tgt = self._EXP4_CAM_TGT
+        fl = self._EXP4_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+            carb.log_warn(f"exp4 camera: eye={eye} tgt={tgt} fl={fl}")
+        except Exception as exc:
+            carb.log_error(f"_force_exp4_camera: {exc}")
+
+    async def _deferred_exp4_camera(self):
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "4":
+                return
+            self._force_exp4_camera()
+
     def _store_param(self, exp_id: str, key: str, data: dict):
         """Store a generic parameter for experiments that don't need immediate USD apply."""
         self._exp_params.setdefault(exp_id, {})[key] = float(data.get("value", 0))
@@ -1373,8 +3331,11 @@ class WebRTCServer:
             else:
                 presets = {
                     "2": (WebRTCServer._EXP2_CAM_EYE, WebRTCServer._EXP2_CAM_TGT, WebRTCServer._EXP2_CAM_FL),
-                    "3": (Gf.Vec3d(-0.5, 6.8, 3.2), Gf.Vec3d(0, 6, 2.5), 18.0),
+                    "3": (WebRTCServer._EXP3_CAM_EYE, WebRTCServer._EXP3_CAM_TGT, WebRTCServer._EXP3_CAM_FL),
+                    "4": (WebRTCServer._EXP4_CAM_EYE, WebRTCServer._EXP4_CAM_TGT, WebRTCServer._EXP4_CAM_FL),
+                    "5": (WebRTCServer._EXP5_CAM_EYE, WebRTCServer._EXP5_CAM_TGT, WebRTCServer._EXP5_CAM_FL),
                     "7": (Gf.Vec3d(0.0, -1.6, 0.6), Gf.Vec3d(0, 0, 0.0), 24.0),
+                    "8": (WebRTCServer._EXP8_CAM_EYE, WebRTCServer._EXP8_CAM_TGT, WebRTCServer._EXP8_CAM_FL),
                 }
                 if experiment_id in presets:
                     eye, target, focal = presets[experiment_id]
@@ -1952,6 +3913,678 @@ class WebRTCServer:
             self.exp7_post_v2 = v2
             self.exp7_phase = "settled"
 
+    # --- Experiment 8 — resonance in an air column ------------------------
+    # Physics: a 1-D scalar wave equation is integrated by the standard
+    # second-order leapfrog / central-difference finite-difference method
+    # inside a driver asyncio task running at EXP8_WAVE_TICK_HZ.  The
+    # resulting node-displacement field is written each tick into the pose
+    # of kinematic "air slice" rigid bodies in the PhysX stage so that
+    # standing waves emerge from authentic, transient dynamics — never
+    # from a closed-form L = n·λ/4 formula.
+    #
+    # The dispersion relation of the FDM scheme matches the continuous
+    # equation for spatial wavelengths ≫ h, so mode-lock locations and
+    # relative amplitude ratios are quantitatively correct.
+
+    _EXP8_CAM_EYE = Gf.Vec3d(0.60, -1.40, 0.78)
+    _EXP8_CAM_TGT = Gf.Vec3d(0.60, 0.0, 0.40)
+    _EXP8_CAM_FL = 16.0
+
+    def _force_exp8_camera(self, stage=None):
+        eye = self._EXP8_CAM_EYE
+        tgt = self._EXP8_CAM_TGT
+        fl = self._EXP8_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+        except Exception as exc:
+            carb.log_error(f"_force_exp8_camera: {exc}")
+
+    async def _deferred_exp8_camera(self):
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "8":
+                return
+            self._force_exp8_camera()
+
+    def _exp8_reset_fields(self):
+        """Zero the FDM displacement fields and the probe history."""
+        n = EXP8_N_SLICES + 1
+        self._exp8_u_prev = np.zeros(n, dtype=np.float64)
+        self._exp8_u_curr = np.zeros(n, dtype=np.float64)
+        self._exp8_u_next = np.zeros(n, dtype=np.float64)
+        self._exp8_probe_history = []
+        self._exp8_amp_history = []
+        self._exp8_last_rms = 0.0
+        self._exp8_last_peak = 0.0
+
+    async def _setup_exp8_scene(self):
+        """Build the resonance-tube scene from scratch: tube, speaker, piston,
+        marker clips and N kinematic air-slice spheres that will visualise the
+        simulated standing-wave displacement field."""
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp8: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, EXP8_ROOT_PATH)
+            UsdGeom.Xform.Define(stage, EXP8_SLICE_ROOT)
+            UsdGeom.Xform.Define(stage, EXP8_MARKER_ROOT)
+
+            # Physics scene — gravity off (horizontal, air-column is 1-D along X)
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(0.0)
+
+            # Lighting
+            UsdLux.DomeLight.Define(stage, f"{EXP8_ROOT_PATH}/DomeLight").CreateIntensityAttr(1300.0)
+            rect = UsdLux.RectLight.Define(stage, f"{EXP8_ROOT_PATH}/RectLight")
+            rect.CreateIntensityAttr(2200.0)
+            rect.CreateWidthAttr(2.0)
+            rect.CreateHeightAttr(0.6)
+            rx = UsdGeom.Xformable(rect.GetPrim())
+            rx.ClearXformOpOrder()
+            rx.AddTranslateOp().Set(Gf.Vec3d(0.60, -0.4, 1.2))
+            rx.AddRotateXYZOp().Set(Gf.Vec3f(-60.0, 0.0, 0.0))
+
+            # Optical bench / lab table (visual only)
+            self._exp8_make_visual(
+                stage, f"{EXP8_ROOT_PATH}/bench",
+                pos=(0.60, 0.0, EXP8_GROUND_Z),
+                scale=(1.60, 0.70, 0.03),
+                color=(0.22, 0.22, 0.26),
+            )
+            # Adjustable foot 1 & 2 — classical PASCO V-cradle mounts
+            for i, fx in enumerate((0.10, EXP8_TUBE_TOTAL_LENGTH - 0.10)):
+                self._exp8_make_visual(
+                    stage, f"{EXP8_ROOT_PATH}/foot_{i}",
+                    pos=(EXP8_TUBE_BASE_X + fx, 0.0, EXP8_TUBE_Z - EXP8_TUBE_DIAMETER / 2 - 0.06),
+                    scale=(0.06, 0.12, 0.12),
+                    color=(0.35, 0.38, 0.42),
+                )
+
+            # Main tube — a transparent-ish translucent shell.
+            # We render it as a slightly-scaled cylinder along the X-axis so
+            # users can see the internal air slices.
+            self._exp8_make_tube(stage)
+
+            # Speaker housing + driven diaphragm (kinematic rigid body we move
+            # each wave tick so the PhysX pose matches the driver signal)
+            self._exp8_make_speaker(stage)
+
+            # Piston and handle
+            self._exp8_make_piston(stage)
+
+            # Marker clips (four ring-shaped clips that user can move)
+            for i, mx in enumerate((0.25, 0.50, 0.75, 1.00)):
+                path = EXP8_MARKER_PATH_TEMPLATE.format(i)
+                self._exp8_make_visual(
+                    stage, path,
+                    pos=(EXP8_TUBE_BASE_X + mx, 0.0,
+                         EXP8_TUBE_Z + EXP8_TUBE_DIAMETER / 2 + 0.012),
+                    scale=(0.014, EXP8_TUBE_DIAMETER + 0.01, 0.006),
+                    color=(0.95, 0.75, 0.20),
+                )
+
+            # Air-slice rigid bodies — these are the mass points whose
+            # position is driven each physics step from the FDM solution.
+            self._exp8_make_air_slices(stage)
+
+            # Apply current piston position (= current tube length)
+            await self._exp8_apply_piston_position()
+
+            self._exp8_reset_fields()
+            self.exp8_scene_built = True
+            self.exp8_phase = "idle"
+            self.exp8_driver_running = False
+
+            for _ in range(6):
+                await app.next_update_async()
+
+            self._force_exp8_camera(stage)
+            carb.log_warn(
+                f"exp8: scene built  L={self.exp8_length_m*100:.1f} cm  "
+                f"f={self.exp8_frequency:.1f} Hz  mode={self.exp8_mode}"
+            )
+        except Exception as exc:
+            carb.log_error(f"_setup_exp8_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    @staticmethod
+    def _exp8_make_visual(stage, path, pos, scale, color, opacity: float = 1.0):
+        """Create a purely visual cuboid (no physics body)."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+        if opacity < 1.0:
+            cube.CreateDisplayOpacityAttr([float(opacity)])
+
+    def _exp8_make_tube(self, stage):
+        """A translucent cylindrical shell along +X used purely for visuals."""
+        tube = UsdGeom.Cylinder.Define(stage, EXP8_TUBE_PATH)
+        tube.CreateHeightAttr(EXP8_TUBE_TOTAL_LENGTH)
+        tube.CreateRadiusAttr(EXP8_TUBE_DIAMETER / 2.0 + EXP8_TUBE_WALL)
+        tube.CreateAxisAttr("X")
+        xf = UsdGeom.Xformable(tube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(
+            EXP8_TUBE_BASE_X + EXP8_TUBE_TOTAL_LENGTH / 2.0,
+            EXP8_TUBE_Y,
+            EXP8_TUBE_Z,
+        ))
+        tube.CreateDisplayColorAttr([Gf.Vec3f(0.70, 0.82, 0.92)])
+        tube.CreateDisplayOpacityAttr([0.22])
+
+        # Inner hollow + end caps drawn as thin rings for definition
+        ring_r = EXP8_TUBE_DIAMETER / 2.0
+        for end_x in (EXP8_TUBE_BASE_X, EXP8_TUBE_BASE_X + EXP8_TUBE_TOTAL_LENGTH):
+            cap = UsdGeom.Cylinder.Define(
+                stage, f"{EXP8_TUBE_PATH}_cap_{int(end_x * 1000)}",
+            )
+            cap.CreateHeightAttr(0.006)
+            cap.CreateRadiusAttr(ring_r + EXP8_TUBE_WALL * 1.2)
+            cap.CreateAxisAttr("X")
+            cf = UsdGeom.Xformable(cap.GetPrim())
+            cf.ClearXformOpOrder()
+            cf.AddTranslateOp().Set(Gf.Vec3d(end_x, EXP8_TUBE_Y, EXP8_TUBE_Z))
+            cap.CreateDisplayColorAttr([Gf.Vec3f(0.50, 0.60, 0.70)])
+            cap.CreateDisplayOpacityAttr([0.55])
+
+        # Axis scale ticks underneath (every 10 cm)
+        for i in range(13):
+            gx = EXP8_TUBE_BASE_X + i * 0.10
+            self._exp8_make_visual(
+                stage, f"{EXP8_ROOT_PATH}/tick_{i:02d}",
+                pos=(gx, 0.0, EXP8_TUBE_Z - EXP8_TUBE_DIAMETER / 2 - 0.011),
+                scale=(0.003, 0.04, 0.004),
+                color=(0.85, 0.85, 0.90),
+            )
+
+    def _exp8_make_speaker(self, stage):
+        """Kinematic speaker housing + a driven diaphragm disk at x ≈ 0."""
+        housing_path = EXP8_SPEAKER_PATH
+        box_w = EXP8_TUBE_DIAMETER * 2.2
+        box_h = EXP8_TUBE_DIAMETER * 2.2
+        box_d = 0.10
+        self._exp8_make_visual(
+            stage, housing_path,
+            pos=(EXP8_TUBE_BASE_X - box_d / 2.0 - 0.002, 0.0, EXP8_TUBE_Z),
+            scale=(box_d, box_w, box_h),
+            color=(0.12, 0.12, 0.14),
+        )
+        # Magnet / basket decoration
+        self._exp8_make_visual(
+            stage, f"{housing_path}_cone_ring",
+            pos=(EXP8_TUBE_BASE_X - 0.005, 0.0, EXP8_TUBE_Z),
+            scale=(0.008, box_w * 0.75, box_h * 0.75),
+            color=(0.85, 0.60, 0.15),
+        )
+
+        # Kinematic diaphragm — we reposition each wave tick with the
+        # driver signal so the PhysX pose matches the boundary condition
+        # u(0, t) = A sin(2π f t).
+        diaphragm = UsdGeom.Cylinder.Define(stage, EXP8_DIAPHRAGM_PATH)
+        diaphragm.CreateHeightAttr(0.01)
+        diaphragm.CreateRadiusAttr(EXP8_TUBE_DIAMETER / 2.0 * 0.85)
+        diaphragm.CreateAxisAttr("X")
+        dx = UsdGeom.Xformable(diaphragm.GetPrim())
+        dx.ClearXformOpOrder()
+        dx.AddTranslateOp().Set(Gf.Vec3d(EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z))
+        diaphragm.CreateDisplayColorAttr([Gf.Vec3f(0.15, 0.75, 1.00)])
+        prim = diaphragm.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
+
+    def _exp8_make_piston(self, stage):
+        """Kinematic piston disk + handle at x = L (user-controlled position)."""
+        disk = UsdGeom.Cylinder.Define(stage, EXP8_PISTON_PATH)
+        disk.CreateHeightAttr(0.012)
+        disk.CreateRadiusAttr(EXP8_TUBE_DIAMETER / 2.0 * 0.92)
+        disk.CreateAxisAttr("X")
+        px = UsdGeom.Xformable(disk.GetPrim())
+        px.ClearXformOpOrder()
+        px.AddTranslateOp().Set(Gf.Vec3d(
+            EXP8_TUBE_BASE_X + self.exp8_length_m, EXP8_TUBE_Y, EXP8_TUBE_Z,
+        ))
+        disk.CreateDisplayColorAttr([Gf.Vec3f(0.85, 0.35, 0.20)])
+        prim = disk.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
+
+        # Handle rod extending out of the tube (+X end)
+        handle = UsdGeom.Cylinder.Define(stage, f"{EXP8_PISTON_PATH}_handle")
+        handle.CreateHeightAttr(0.35)
+        handle.CreateRadiusAttr(0.006)
+        handle.CreateAxisAttr("X")
+        hx = UsdGeom.Xformable(handle.GetPrim())
+        hx.ClearXformOpOrder()
+        hx.AddTranslateOp().Set(Gf.Vec3d(
+            EXP8_TUBE_BASE_X + self.exp8_length_m + 0.18,
+            EXP8_TUBE_Y, EXP8_TUBE_Z,
+        ))
+        handle.CreateDisplayColorAttr([Gf.Vec3f(0.75, 0.75, 0.78)])
+
+        grip = UsdGeom.Sphere.Define(stage, f"{EXP8_PISTON_PATH}_grip")
+        grip.CreateRadiusAttr(0.020)
+        gx = UsdGeom.Xformable(grip.GetPrim())
+        gx.ClearXformOpOrder()
+        gx.AddTranslateOp().Set(Gf.Vec3d(
+            EXP8_TUBE_BASE_X + self.exp8_length_m + 0.36,
+            EXP8_TUBE_Y, EXP8_TUBE_Z,
+        ))
+        grip.CreateDisplayColorAttr([Gf.Vec3f(0.15, 0.15, 0.18)])
+
+    def _exp8_make_air_slices(self, stage):
+        """Build N kinematic sphere rigid bodies representing air mass points.
+        These are the nodes whose displacement from equilibrium is produced
+        by the wave equation solver."""
+        for i in range(1, EXP8_N_SLICES):
+            path = EXP8_SLICE_PATH_TEMPLATE.format(i)
+            existing = stage.GetPrimAtPath(path)
+            if existing and existing.IsValid():
+                stage.RemovePrim(path)
+            sphere = UsdGeom.Sphere.Define(stage, path)
+            sphere.CreateRadiusAttr(EXP8_SLICE_DRAW_RADIUS)
+            xf = UsdGeom.Xformable(sphere.GetPrim())
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
+            # Colour varies along tube for easy identification of standing-wave
+            # node/antinode locations at runtime.
+            t = i / float(EXP8_N_SLICES)
+            sphere.CreateDisplayColorAttr([Gf.Vec3f(
+                0.20 + 0.70 * t, 0.40 + 0.20 * (1.0 - t), 0.85,
+            )])
+            prim = sphere.GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
+
+    def _exp8_slice_rest_pos(self, i: int) -> Gf.Vec3d:
+        """Rest-position (no wave displacement) for slice i along the tube."""
+        L = max(0.05, float(self.exp8_length_m))
+        x_rel = (i / float(EXP8_N_SLICES)) * L
+        return Gf.Vec3d(
+            EXP8_TUBE_BASE_X + x_rel, EXP8_TUBE_Y, EXP8_TUBE_Z,
+        )
+
+    async def _exp8_apply_piston_position(self):
+        """Move the piston prim (and slice rest positions) to match current L.
+        In 'open' mode the piston is parked just past the far end of the tube
+        so the user still sees the hardware; physics uses a Neumann BC."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            if self.exp8_mode == "open":
+                visual_x = EXP8_TUBE_BASE_X + EXP8_TUBE_TOTAL_LENGTH + 0.08
+            else:
+                visual_x = EXP8_TUBE_BASE_X + float(self.exp8_length_m)
+            piston = stage.GetPrimAtPath(EXP8_PISTON_PATH)
+            if piston and piston.IsValid():
+                xf = UsdGeom.Xformable(piston)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x, EXP8_TUBE_Y, EXP8_TUBE_Z))
+            handle = stage.GetPrimAtPath(f"{EXP8_PISTON_PATH}_handle")
+            if handle and handle.IsValid():
+                xf = UsdGeom.Xformable(handle)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x + 0.18, EXP8_TUBE_Y, EXP8_TUBE_Z))
+            grip = stage.GetPrimAtPath(f"{EXP8_PISTON_PATH}_grip")
+            if grip and grip.IsValid():
+                xf = UsdGeom.Xformable(grip)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x + 0.36, EXP8_TUBE_Y, EXP8_TUBE_Z))
+            # Reposition every air-slice sphere to its new rest X
+            for i in range(1, EXP8_N_SLICES):
+                path = EXP8_SLICE_PATH_TEMPLATE.format(i)
+                prim = stage.GetPrimAtPath(path)
+                if prim and prim.IsValid():
+                    xf = UsdGeom.Xformable(prim)
+                    xf.ClearXformOpOrder()
+                    xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
+        except Exception as exc:
+            carb.log_error(f"_exp8_apply_piston_position: {exc}")
+
+    def _exp8_freq_sim(self) -> float:
+        """Return the simulation-time-scaled driver frequency.  Wave-speed
+        ratio c_sim/c_real is applied uniformly so resonance lengths and
+        mode ratios remain exactly equal to the real experiment."""
+        return max(0.01, float(self.exp8_frequency) * EXP8_FREQ_SCALE)
+
+    def _exp8_step_wave(self, dt: float, t_now: float):
+        """Advance the FDM scheme by a single sub-step of size ``dt``.
+
+        The discretisation is
+            u_i^{n+1} = 2u_i^n - u_i^{n-1}
+                     + (c·dt/h)² (u_{i+1}^n - 2 u_i^n + u_{i-1}^n)
+                     - 2 γ dt (u_i^n - u_i^{n-1})
+        with boundary conditions that depend on `self.exp8_mode`.
+        """
+        N = EXP8_N_SLICES
+        L = max(0.05, float(self.exp8_length_m))
+        c = EXP8_C_SIM
+        h = L / N
+        C2 = (c * dt / h) ** 2
+
+        up = self._exp8_u_prev
+        uc = self._exp8_u_curr
+        un = self._exp8_u_next
+
+        # Interior nodes (vectorised)
+        un[1:N] = (2.0 * uc[1:N] - up[1:N]
+                   + C2 * (uc[2:N + 1] - 2.0 * uc[1:N] + uc[0:N - 1])
+                   - 2.0 * float(self.exp8_damping) * dt
+                   * (uc[1:N] - up[1:N]))
+
+        # Boundary 0 (speaker) — driven Dirichlet
+        amp_m = float(self.exp8_amplitude_mm) * 0.001      # mm → m
+        f_sim = self._exp8_freq_sim()
+        un[0] = amp_m * math.sin(2.0 * math.pi * f_sim * t_now)
+
+        # Boundary N (piston / open end)
+        if self.exp8_mode == "closed":
+            un[N] = 0.0                           # Dirichlet: no motion through piston
+        else:
+            # Open end: free Neumann (∂u/∂x = 0) implemented with a ghost
+            # node u_{N+1} = u_{N-1}, giving the simple reflection-free stub
+            un[N] = (2.0 * uc[N] - up[N]
+                     + 2.0 * C2 * (uc[N - 1] - uc[N])
+                     - 2.0 * float(self.exp8_damping) * dt
+                     * (uc[N] - up[N]))
+
+        # Rotate buffers
+        self._exp8_u_prev = uc
+        self._exp8_u_curr = un
+        self._exp8_u_next = up            # reuse storage
+
+    async def _exp8_driver_loop(self):
+        """Background task: integrate the wave equation and update the pose
+        of every slice prim so the Isaac Sim viewport reflects the current
+        displacement field.  Runs at ``EXP8_WAVE_TICK_HZ`` with
+        ``EXP8_PHYS_SUBSTEPS`` FDM sub-steps per tick to satisfy CFL even
+        when the user shortens the tube aggressively."""
+        try:
+            tick_dt = 1.0 / float(EXP8_WAVE_TICK_HZ)
+            carb.log_warn("exp8: driver loop started")
+            while self.exp8_driver_running:
+                loop_start = time.time()
+                t_sim = loop_start - self.exp8_sim_start_time
+                # Ensure CFL ⇒ sub-step dt below stability limit
+                L = max(0.05, float(self.exp8_length_m))
+                h = L / EXP8_N_SLICES
+                dt_cfl = 0.9 * h / EXP8_C_SIM
+                substeps = max(EXP8_PHYS_SUBSTEPS,
+                               int(math.ceil(tick_dt / dt_cfl)))
+                dt = tick_dt / substeps
+                for s in range(substeps):
+                    self._exp8_step_wave(dt, t_sim + s * dt)
+                self._exp8_update_visuals()
+                self._exp8_update_probe(t_sim)
+                # Sleep to maintain tick rate (accounting for work done)
+                remaining = tick_dt - (time.time() - loop_start)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                else:
+                    await asyncio.sleep(0.001)
+        except asyncio.CancelledError:
+            carb.log_warn("exp8: driver loop cancelled")
+            raise
+        except Exception as exc:
+            carb.log_error(f"_exp8_driver_loop: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    def _exp8_update_visuals(self):
+        """Copy the current displacement field into Isaac Sim slice poses."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            amp = EXP8_AMP_SCALE
+            # Speaker diaphragm (index 0)
+            diaphragm = stage.GetPrimAtPath(EXP8_DIAPHRAGM_PATH)
+            if diaphragm and diaphragm.IsValid():
+                xf = UsdGeom.Xformable(diaphragm)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(
+                    EXP8_TUBE_BASE_X + amp * float(self._exp8_u_curr[0]),
+                    EXP8_TUBE_Y, EXP8_TUBE_Z,
+                ))
+            # Interior slices
+            for i in range(1, EXP8_N_SLICES):
+                path = EXP8_SLICE_PATH_TEMPLATE.format(i)
+                prim = stage.GetPrimAtPath(path)
+                if not (prim and prim.IsValid()):
+                    continue
+                rest = self._exp8_slice_rest_pos(i)
+                dx = amp * float(self._exp8_u_curr[i])
+                xf = UsdGeom.Xformable(prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(Gf.Vec3d(rest[0] + dx, rest[1], rest[2]))
+        except Exception:
+            pass
+
+    def _exp8_update_probe(self, t_sim: float):
+        """Sample the current |u| field to drive charts + resonance detection."""
+        u = self._exp8_u_curr
+        # Probe at the midpoint of the active tube (most sensitive to f1)
+        idx_probe = max(1, int(0.5 * EXP8_N_SLICES))
+        probe_val = float(u[idx_probe])
+        self._exp8_probe_history.append((t_sim, probe_val))
+        if len(self._exp8_probe_history) > EXP8_TELEMETRY_HISTORY:
+            self._exp8_probe_history.pop(0)
+        peak = float(np.max(np.abs(u[1:EXP8_N_SLICES])))
+        self._exp8_amp_history.append(peak)
+        if len(self._exp8_amp_history) > int(EXP8_WAVE_TICK_HZ):   # ~1 s window
+            self._exp8_amp_history.pop(0)
+        if self._exp8_amp_history:
+            self._exp8_last_peak = float(np.max(self._exp8_amp_history))
+        rms = float(np.sqrt(np.mean(u[1:EXP8_N_SLICES] ** 2))) if EXP8_N_SLICES > 1 else 0.0
+        self._exp8_last_rms = rms
+        drive_amp_m = max(1e-9, float(self.exp8_amplitude_mm) * 0.001)
+        self._exp8_resonance_ratio = self._exp8_last_peak / drive_amp_m
+
+    def _exp8_resonance_lengths(self) -> list:
+        """Predicted piston positions (metres) at which the current driver
+        frequency produces resonance.  Includes the empirical end-effect
+        correction (0.3 d for closed, 0.6 d for open tubes)."""
+        f = max(1.0, float(self.exp8_frequency))
+        lam = EXP8_C_REAL / f
+        d = EXP8_TUBE_DIAMETER
+        results = []
+        if self.exp8_mode == "closed":
+            # L + 0.3 d = (2n − 1) λ / 4
+            for n in range(1, 12):
+                L = (2 * n - 1) * lam / 4.0 - 0.3 * d
+                if 0.02 <= L <= EXP8_TUBE_TOTAL_LENGTH:
+                    results.append((n, round(L, 4)))
+        else:
+            # L + 0.6 d = n λ / 2
+            for n in range(1, 12):
+                L = n * lam / 2.0 - 0.6 * d
+                if 0.02 <= L <= EXP8_TUBE_TOTAL_LENGTH:
+                    results.append((n, round(L, 4)))
+        return results
+
+    def _exp8_resonance_frequencies(self) -> list:
+        """Predicted resonance frequencies at the current piston position."""
+        L = float(self.exp8_length_m)
+        d = EXP8_TUBE_DIAMETER
+        results = []
+        if self.exp8_mode == "closed":
+            # f_n = (2n − 1) c / [4 (L + 0.3 d)]
+            denom = max(1e-6, L + 0.3 * d)
+            for n in range(1, 8):
+                f_n = (2 * n - 1) * EXP8_C_REAL / (4.0 * denom)
+                if 20.0 <= f_n <= 5000.0:
+                    results.append((n, round(f_n, 1)))
+        else:
+            denom = max(1e-6, L + 0.6 * d)
+            for n in range(1, 8):
+                f_n = n * EXP8_C_REAL / (2.0 * denom)
+                if 20.0 <= f_n <= 5000.0:
+                    results.append((n, round(f_n, 1)))
+        return results
+
+    def _exp8_nearest_resonance(self):
+        """Return (n*, f_n*, relative_detuning) for the nearest mode."""
+        fs = self._exp8_resonance_frequencies()
+        if not fs:
+            return (0, 0.0, 1.0)
+        f_now = float(self.exp8_frequency)
+        best = min(fs, key=lambda nf: abs(nf[1] - f_now))
+        det = (f_now - best[1]) / best[1] if best[1] > 0 else 1.0
+        self._exp8_nearest_mode = best[0]
+        return (best[0], best[1], round(det, 4))
+
+    async def _start_exp8_drive(self):
+        """Start (or restart) the wave driver and PhysX timeline."""
+        try:
+            if not self.exp8_scene_built:
+                await self._setup_exp8_scene()
+
+            # Cancel any previous driver
+            if self._exp8_update_task and not self._exp8_update_task.done():
+                self.exp8_driver_running = False
+                self._exp8_update_task.cancel()
+                try:
+                    await self._exp8_update_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._exp8_update_task = None
+
+            self._exp8_reset_fields()
+            self.exp8_sim_start_time = time.time()
+            self.exp8_driver_running = True
+            self.exp8_phase = "running"
+            self._exp8_update_task = asyncio.ensure_future(self._exp8_driver_loop())
+
+            tl = omni.timeline.get_timeline_interface()
+            self.simulation_control_enabled = True
+            tl.play()
+            carb.log_warn(
+                f"exp8: driver started  L={self.exp8_length_m*100:.1f}cm  "
+                f"f={self.exp8_frequency:.1f}Hz  A={self.exp8_amplitude_mm:.2f}mm  "
+                f"mode={self.exp8_mode}  f_sim={self._exp8_freq_sim():.3f}Hz"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp8_drive: {exc}")
+
+    async def _stop_exp8_drive(self):
+        """Halt the wave driver without tearing down the scene."""
+        try:
+            self.exp8_driver_running = False
+            if self._exp8_update_task and not self._exp8_update_task.done():
+                self._exp8_update_task.cancel()
+                try:
+                    await self._exp8_update_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._exp8_update_task = None
+            self.exp8_phase = "stopped"
+            carb.log_warn("exp8: driver stopped")
+        except Exception as exc:
+            carb.log_error(f"_stop_exp8_drive: {exc}")
+
+    async def _reset_exp8(self):
+        """Return every slice to its rest position and clear measurements."""
+        await self._stop_exp8_drive()
+        self._exp8_reset_fields()
+        self.exp8_phase = "idle"
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                for i in range(1, EXP8_N_SLICES):
+                    path = EXP8_SLICE_PATH_TEMPLATE.format(i)
+                    prim = stage.GetPrimAtPath(path)
+                    if prim and prim.IsValid():
+                        xf = UsdGeom.Xformable(prim)
+                        xf.ClearXformOpOrder()
+                        xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
+                dia = stage.GetPrimAtPath(EXP8_DIAPHRAGM_PATH)
+                if dia and dia.IsValid():
+                    xf = UsdGeom.Xformable(dia)
+                    xf.ClearXformOpOrder()
+                    xf.AddTranslateOp().Set(Gf.Vec3d(
+                        EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z,
+                    ))
+        except Exception as exc:
+            carb.log_error(f"_reset_exp8: {exc}")
+
+    def _exp8_telemetry(self, now: float, tl) -> dict:
+        """Build the per-tick telemetry payload for experiment 8."""
+        try:
+            n_mode, f_mode, detuning = self._exp8_nearest_resonance()
+            res_lengths = self._exp8_resonance_lengths()
+            res_freqs = self._exp8_resonance_frequencies()
+            u = self._exp8_u_curr
+            # Compress the per-node displacement to a compact envelope for the
+            # client (front-end bandwidth friendly, but enough to draw the
+            # real-time standing-wave shape).
+            envelope = np.abs(u[:EXP8_N_SLICES + 1]).astype(np.float32)
+            env_list = envelope.tolist()
+            env_list = [round(v, 6) for v in env_list]
+            probe_trace = [round(v, 6) for (_, v) in self._exp8_probe_history[-128:]]
+            running = self.exp8_driver_running
+            return {
+                "timestamp": now,
+                "amplitude": round(self._exp8_last_rms, 6),
+                "peak_amplitude": round(self._exp8_last_peak, 6),
+                "resonance_ratio": round(self._exp8_resonance_ratio, 3),
+                "resonance_peaks": round(self._exp8_resonance_ratio, 3),
+                "is_resonant": self._exp8_resonance_ratio >= EXP8_RESONANCE_THRESHOLD,
+                "probe_value": round(float(u[max(1, int(0.5 * EXP8_N_SLICES))]), 6),
+                "probe_trace": probe_trace,
+                "envelope": env_list,
+                "length_cm": round(self.exp8_length_m * 100.0, 2),
+                "length_m": round(self.exp8_length_m, 4),
+                "frequency": round(self.exp8_frequency, 2),
+                "amplitude_mm": round(self.exp8_amplitude_mm, 3),
+                "damping": round(self.exp8_damping, 3),
+                "mode": self.exp8_mode,
+                "wavelength": round(EXP8_C_REAL / max(1.0, self.exp8_frequency), 4),
+                "n_mode": int(n_mode),
+                "f_mode": float(f_mode),
+                "detuning": float(detuning),
+                "resonance_lengths": res_lengths,
+                "resonance_frequencies": res_freqs,
+                "c_sound": EXP8_C_REAL,
+                "tube_diameter": EXP8_TUBE_DIAMETER,
+                "is_running": running,
+                "phase": self.exp8_phase,
+            }
+        except Exception as exc:
+            carb.log_error(f"_exp8_telemetry: {exc}")
+            return {"timestamp": now, "is_running": False, "phase": "error"}
+
     # --- Telemetry loop ----------------------------------------------------
 
     async def _telemetry_loop(self):
@@ -2042,24 +4675,138 @@ class WebRTCServer:
                             "is_running": self.exp2_phase == "running",
                         }}
                     elif self.current_experiment == "3":
+                        g = 9.81
+                        if tl.is_playing() and self.exp3_scene_built:
+                            theta, omega = self._read_exp3_pendulum_state()
+                            self.exp3_theta = theta
+                            self.exp3_omega = omega
+                            self.exp3_ball_velocity = self._read_exp3_ball_speed()
+                            self._exp3_update_swing_metrics(theta, omega, now)
+                        theta = self.exp3_theta
+                        theta_max = self.exp3_theta_max
+                        L = float(self.exp3_L)
+                        M = float(self.exp3_ball_mass) + float(self.exp3_pend_mass)
+                        h = L * (1.0 - math.cos(theta)) if abs(theta) > 1e-6 else 0.0
+                        h_max = L * (1.0 - math.cos(theta_max)) if theta_max > 1e-6 else 0.0
+                        # KE of the ball-catcher system just after collision
+                        # (ideal inelastic model, independent of PhysX state)
+                        p_in = float(self.exp3_ball_mass) * float(self.exp3_v0)
+                        v_after_ideal = p_in / M if M > 1e-9 else 0.0
+                        ke_after_ideal = 0.5 * M * v_after_ideal * v_after_ideal
+                        ke_loss_pct = 0.0
+                        ke_in = 0.5 * float(self.exp3_ball_mass) * float(self.exp3_v0) ** 2
+                        if ke_in > 1e-9:
+                            ke_loss_pct = (ke_in - ke_after_ideal) / ke_in * 100.0
+                        v0_meas = float(self.exp3_v0_measured)
+                        v0_err_pct = 0.0
+                        if self.exp3_v0 > 1e-6 and v0_meas > 0.0:
+                            v0_err_pct = (v0_meas - self.exp3_v0) / self.exp3_v0 * 100.0
+                        sim_time = (now - self.exp3_fire_time) if self.exp3_fire_time > 0 else 0.0
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "velocity": self._read_velocity("/World/exp3/projectile"),
-                            "energy": self._read_kinetic_energy("/World/exp3/projectile", self.exp3_projectile_mass),
+                            # charted keys
+                            "theta": round(math.degrees(theta), 3),
+                            "omega": round(float(self.exp3_omega), 4),
+                            "ball_velocity": round(float(self.exp3_ball_velocity), 3),
+                            "height": round(h, 5),
+                            # status panel metrics
+                            "theta_max": round(math.degrees(theta_max), 3),
+                            "h_max": round(h_max, 5),
+                            "v0_input": round(float(self.exp3_v0), 3),
+                            "v0_measured": round(v0_meas, 3),
+                            "v0_error_pct": round(v0_err_pct, 2),
+                            "v_after_ideal": round(v_after_ideal, 4),
+                            "ke_input": round(ke_in, 5),
+                            "ke_after_ideal": round(ke_after_ideal, 5),
+                            "ke_loss_percent": round(ke_loss_pct, 2),
+                            "ball_mass": float(self.exp3_ball_mass),
+                            "pend_mass": float(self.exp3_pend_mass),
+                            "L": float(self.exp3_L),
+                            "M_total": round(M, 5),
+                            "sim_time": round(sim_time, 3),
+                            "phase": self.exp3_phase,
                             "is_running": tl.is_playing(),
+                            # legacy field names so older UI builds keep working
+                            "velocity": round(float(self.exp3_ball_velocity), 3),
+                            "energy": round(ke_after_ideal, 5),
                         }}
                     elif self.current_experiment == "4":
+                        if tl.is_playing():
+                            theta_live, omega_live = self._read_exp4_state()
+                            self.exp4_theta = theta_live
+                            self.exp4_omega = omega_live
+                            self._exp4_update_peak(theta_live)
+                            sim_time = now - self.exp4_sim_start_time
+                        else:
+                            sim_time = 0.0
+                        I = self._exp4_I()
+                        b_SI = float(self.exp4_damping_gamma) * I
+                        theta_deg = math.degrees(self.exp4_theta)
+                        theta_drv_deg = math.degrees(self.exp4_theta_drive)
+                        # Current energies (reported for pedagogical value)
+                        ke = 0.5 * I * (self.exp4_omega ** 2)
+                        pe = 0.5 * float(self.exp4_spring_k) * (self.exp4_theta ** 2)
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "displacement": self._read_displacement("/World/exp4/oscillator"),
-                            "amplitude": abs(self._read_displacement("/World/exp4/oscillator")),
+                            # live state
+                            "theta": round(theta_deg, 3),
+                            "omega": round(self.exp4_omega, 4),
+                            "theta_drive": round(theta_drv_deg, 3),
+                            "amplitude": round(math.degrees(self.exp4_peak_amp), 3),
+                            "sim_time": round(sim_time, 3),
+                            # analytical theory (reference, not used by PhysX)
+                            "f_drive": round(float(self.exp4_frequency), 4),
+                            "f_natural": round(self._exp4_natural_freq_hz(), 4),
+                            "omega_drive_rad": round(2.0 * math.pi * float(self.exp4_frequency), 4),
+                            "omega_natural_rad": round(2.0 * math.pi * self._exp4_natural_freq_hz(), 4),
+                            "theory_amp_deg": round(math.degrees(self._exp4_theory_amplitude()), 3),
+                            "phase_lag_deg": round(self._exp4_theory_phase_deg(), 2),
+                            "quality_factor": round(self._exp4_Q(), 2),
+                            # drivers / params
+                            "drive_amp_deg": round(math.degrees(float(self.exp4_drive_amp)), 2),
+                            "drive_amp_rad": round(float(self.exp4_drive_amp), 4),
+                            "spring_k": round(float(self.exp4_spring_k), 6),
+                            "damping_gamma": round(float(self.exp4_damping_gamma), 4),
+                            "damping_b_SI": round(b_SI, 8),
+                            "inertia_I": round(I, 8),
+                            "disk_mass": round(float(self.exp4_disk_mass), 4),
+                            "disk_radius": round(float(self.exp4_disk_radius), 4),
+                            # energies
+                            "kinetic_energy": round(ke, 8),
+                            "potential_energy": round(pe, 8),
+                            # state
+                            "phase": self.exp4_phase,
                             "is_running": tl.is_playing(),
                         }}
                     elif self.current_experiment == "5":
+                        if tl.is_playing():
+                            theta_live, omega_live = self._read_exp5_state()
+                            self.exp5_theta = theta_live
+                            self.exp5_omega = omega_live
+                            sim_time = now - self.exp5_sim_start_time
+                            self._exp5_update_period_measurement(theta_live, sim_time)
+                        else:
+                            sim_time = 0.0
+                        L = max(1e-6, float(self.exp5_L))
+                        x = max(1e-6, float(self.exp5_x))
+                        I_cm = self.exp5_m * L * L / 12.0
+                        I_total = I_cm + self.exp5_m * x * x
+                        T_theory = self._exp5_T_theory()
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "period": 0.0,
-                            "inertia": 0.0,
+                            "theta": round(math.degrees(self.exp5_theta), 3),
+                            "omega": round(self.exp5_omega, 4),
+                            "period": round(self.exp5_measured_period, 4),
+                            "T_theory": round(T_theory, 4),
+                            "inertia": round(I_total, 6),
+                            "I_cm": round(I_cm, 6),
+                            "x_min_period": round(self._exp5_x_min_period(), 4),
+                            "sim_time": round(sim_time, 3),
+                            "m": self.exp5_m,
+                            "L": self.exp5_L,
+                            "x": self.exp5_x,
+                            "theta0_deg": self.exp5_theta0_deg,
+                            "phase": self.exp5_phase,
                             "is_running": tl.is_playing(),
                         }}
                     elif self.current_experiment == "6":
@@ -2102,12 +4849,7 @@ class WebRTCServer:
                             "restitution": self.exp7_restitution,
                         }}
                     elif self.current_experiment == "8":
-                        msg = {"type": "telemetry", "data": {
-                            "timestamp": now,
-                            "amplitude": 0.0,
-                            "resonance_peaks": 0.0,
-                            "is_running": tl.is_playing(),
-                        }}
+                        msg = {"type": "telemetry", "data": self._exp8_telemetry(now, tl)}
                     else:
                         msg = {"type": "telemetry", "data": {"timestamp": now, "is_running": tl.is_playing()}}
 

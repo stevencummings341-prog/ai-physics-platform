@@ -154,6 +154,20 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
             isaacService.sendCommand('set_velocity2', exp7V2);
             isaacService.sendCommand('set_elasticity', exp7Rest);
           }
+          if (config.experimentNumber === '8') {
+            const c = config.controls;
+            const getDef = (id: string) =>
+              (c.find(ct => ct.id === id)?.defaultValue as number | undefined);
+            const lengthDef = getDef('length');
+            const freqDef = getDef('frequency');
+            const ampDef = getDef('amplitude');
+            const dampDef = getDef('damping');
+            if (lengthDef !== undefined) isaacService.sendCommand('set_length', lengthDef);
+            if (freqDef !== undefined) isaacService.sendCommand('set_frequency', freqDef);
+            if (ampDef !== undefined) isaacService.sendCommand('set_exp8_amplitude', ampDef);
+            if (dampDef !== undefined) isaacService.sendCommand('set_exp8_damping', dampDef);
+            isaacService.sendCommand('exp8_closed_tube', true);
+          }
           setTimeout(() => { isaacService.requestSimulationState(); setLoadingProgress(100); setTimeout(() => setIsLoading(false), 300); }, 500);
         } else { setErrorMessage('Failed to enter experiment.'); }
       } catch { setStatus(ConnectionStatus.ERROR); setErrorMessage('Init error.'); }

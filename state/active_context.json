@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-04-10",
+  "last_updated": "2026-04-17-exp4",
   "project_name": "AI Physics Experiment Platform",
   "project_goal": "Full-stack physics experiment platform: Isaac Sim backend + React web frontend with WebRTC streaming, real-time telemetry, and interactive control.",
   "architecture": {
@@ -19,7 +19,7 @@
     ".cursor/rules/project.mdc"
   ],
   "current_focus": [
-    "Implement remaining experiments (3-6, 8) — USD physics setup + server telemetry wiring",
+    "Implement remaining experiments (6, 8) — USD physics setup + server telemetry wiring",
     "VR hand tracking integration — Meta Quest 3S → UDP → WebRTC server → experiment interaction",
     "Keep frontend locked cards for unimplemented experiments",
     "Preserve project continuity across agent sessions"
@@ -40,23 +40,25 @@
       "notes": "Procedural RK4 VisualPendulum (no PhysX joints). Classmate code integrated: full θ/ω/α telemetry, period detection via zero-crossing, series expansion comparison, batch mode with multi-phase sweep + Markdown report."
     },
     "expt3_ballistic_pendulum": {
-      "status": "stub",
+      "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
-      "batch_mode": false,
-      "notes": "USD asset exists, server handler is placeholder, frontend locked"
+      "server_telemetry": "full",
+      "batch_mode": true,
+      "notes": "Full web interactive + batch mode. Procedural PhysX scene: kinematic pivot + compound pendulum body (rod + 4-walled cup) via Y-axis revolute joint + ball DynamicCuboid. Zero-restitution high-friction materials make the collision fully inelastic; compound cup geometry traps the ball on impact. Live telemetry streams θ, ω, ball speed, and derives v0_measured from θmax via v0 = (m_ball+m_pend)/m_ball · √(2gL(1−cos θmax)). Batch sim.py runs a v0 sweep and generates swing curves + formula verification plot + Markdown report."
     },
     "expt4_driven_damped": {
-      "status": "stub",
+      "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
-      "batch_mode": false
+      "server_telemetry": "full",
+      "batch_mode": false,
+      "notes": "Driven damped torsional oscillator implemented procedurally in PhysX. Kinematic pivot + dynamic aluminium disk (MassAPI with explicit I_z = ½MR²) joined by a Z-axis RevoluteJoint with UsdPhysics.DriveAPI: stiffness=κ (torsional spring, N·m/rad) and damping=b=γ·I (magnetic brake). Sinusoidal targetPosition = A·sin(2πf·t) updated at 120 Hz → PhysX integrates I·θ̈ + b·θ̇ + κ·θ = κ·A·sin(ωt). Controls: drive frequency f, damping γ, driver amplitude A, spring κ. Buttons: Start Driver / Free Oscillation (initial ω kick with A=0) / Reset. Telemetry: live θ, ω, driver angle θ_d, peak |θ|, and analytical reference values (f₀, f_d, Q = √(κI)/b, theory amplitude, phase lag)."
     },
     "expt5_rotational_inertia": {
-      "status": "stub",
+      "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
-      "batch_mode": false
+      "server_telemetry": "full",
+      "batch_mode": false,
+      "notes": "Physical pendulum integrated from classmate code (实验5/expt5_pendulum_sim.py). Procedural PhysX scene: uniform bar on kinematic pivot via Y-axis revolute joint so gravity (-Z) produces real torque. Live telemetry: θ, ω, measured T, theoretical T = 2π√((L²/12 + x²)/(g·x)). Adjustable m, L, x, θ₀."
     },
     "expt6_centripetal_force": {
       "status": "stub",
@@ -100,7 +102,7 @@
     "Keep rule files and AGENTS.md versioned in git"
   ],
   "open_risks": [
-    "exp3-6, exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
+    "exp6, exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
     "Experiment runtime behavior needs live Isaac Sim verification",
     "VR hand tracking requires same-LAN Quest 3S + open UDP 8888 — not yet live-tested with real headset"
   ],

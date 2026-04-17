@@ -72,6 +72,105 @@ EXP2_BOB_DRAW_SIZE = 0.048
 EXP2_PIVOT_DRAW_SIZE = 0.05
 EXP2_FLOOR_Z = -0.24
 
+# Experiment 5 — physical pendulum (rotational inertia)
+# A uniform bar is pivoted at distance x from its centre of mass and swings
+# under gravity around a Y-axis revolute joint (vertical XZ plane).
+# T(x) = 2π √((L²/12 + x²) / (g · x))   →   T_min at  x = L / √12
+EXP5_PIVOT_PATH = "/World/exp5/pivot"
+EXP5_BAR_PATH = "/World/exp5/bar"
+EXP5_MATERIAL_PATH = "/World/exp5/PhysicsMaterial"
+EXP5_JOINT_PATH = "/World/exp5/RevoluteJoint"
+EXP5_DEFAULT_M = 0.28                 # kg   bar mass
+EXP5_DEFAULT_L = 0.28                 # m    bar length
+EXP5_DEFAULT_X = 0.10                 # m    pivot → CM distance
+EXP5_DEFAULT_THETA0_DEG = 5.0         # deg  initial angular displacement
+EXP5_BAR_THICKNESS = 0.02             # m    bar cross-section (square)
+EXP5_PIVOT_HEIGHT = 0.70              # m    pivot z-position above floor
+EXP5_GROUND_Z = -0.24                 # m    floor elevation
+EXP5_SOLVER_POS_ITERS = 64
+EXP5_SOLVER_VEL_ITERS = 32
+
+# Experiment 4 — driven damped torsional oscillator (PhysX-native)
+#
+# An aluminium disk is held by a torsional spring (two springs coupling the
+# disk to a fixed post + a motor-driven arm) and damped by an adjustable
+# magnetic brake. PhysX implementation:
+#     • Kinematic pivot cube
+#     • Dynamic disk (flat cuboid) with explicit disk inertia I = ½MR²
+#     • Revolute joint around +Z, with angular DriveAPI (type=force)
+#         stiffness  = κ   (spring restoring torque)
+#         damping    = b   (magnetic damping)
+#         target_pos = A_drive·sin(ω_d·t)   (sinusoidal driver via the
+#                      spring coupling → produces τ₀·sin(ωt) with τ₀ = κ·A)
+#     • A visual "driver arm" rotates synchronously with target_pos.
+#
+# Equation of motion (PhysX integrates this to full precision):
+#     I·θ̈ + b·θ̇ + κ·θ = κ·A_drive·sin(ω_d·t)
+# with:
+#     ω₀ = √(κ/I)             natural angular frequency
+#     γ  = b/I                 damping rate
+#     Q  = ω₀/(2γ) = √(κI)/b   quality factor
+EXP4_PIVOT_PATH = "/World/exp4/pivot"
+EXP4_DISK_PATH = "/World/exp4/disk"
+EXP4_DRIVER_ARM_PATH = "/World/exp4/driver_arm"
+EXP4_MATERIAL_PATH = "/World/exp4/PhysicsMaterial"
+EXP4_JOINT_PATH = "/World/exp4/RevoluteJoint"
+
+EXP4_DEFAULT_SPRING_K = 0.006         # N·m/rad  (torsional spring const)
+EXP4_DEFAULT_DAMPING_GAMMA = 0.5      # 1/s      (b/I ratio — PDF-style)
+EXP4_DEFAULT_DRIVE_AMP = 0.30         # rad      (driver arm amplitude)
+EXP4_DEFAULT_DRIVE_FREQ = 1.0         # Hz       (driver frequency)
+EXP4_DISK_MASS = 0.120                # kg       (aluminium disk)
+EXP4_DISK_RADIUS = 0.0475             # m        (PASCO ME-8750 disk)
+EXP4_DISK_THICKNESS = 0.006           # m        (plate thickness)
+EXP4_PIVOT_HEIGHT = 0.50              # m        (above floor)
+EXP4_GROUND_Z = -0.24                 # m
+EXP4_SOLVER_POS_ITERS = 96
+EXP4_SOLVER_VEL_ITERS = 48
+EXP4_DRIVER_UPDATE_HZ = 120.0         # target_position refresh rate
+
+# Experiment 3 — ballistic pendulum (projectile fired into swinging catcher)
+# Physics:
+#   Inelastic collision:   m_ball · v0 = (m_ball + m_pend) · v
+#   Energy conservation:   ½ M v²     = M g L (1 − cos θmax)
+#   ⇒   v0 = (m_ball + m_pend) / m_ball · √(2 g L (1 − cos θmax))
+#
+# Scene (all procedural, PhysX-driven):
+#   • Kinematic pivot cube at (0, 0, PIVOT_HEIGHT).
+#   • Pendulum rigid body with compound colliders:
+#       - thin rod from pivot to catcher centre,
+#       - 4-walled "cup" (back/left/right/floor) facing the launcher to trap
+#         the ball on impact (classical styrofoam catcher analogue).
+#   • Revolute joint (Y-axis) pivot ↔ pendulum → swings in the XZ plane.
+#   • Ball: small DynamicCuboid fired with linear velocity v0 toward +X.
+#   • Launcher: visual-only decoration on the −X side.
+EXP3_PIVOT_PATH = "/World/exp3/pivot"
+EXP3_PENDULUM_PATH = "/World/exp3/pendulum"
+EXP3_BALL_PATH = "/World/exp3/ball"
+EXP3_LAUNCHER_PATH = "/World/exp3/launcher"
+EXP3_MATERIAL_BALL_PATH = "/World/exp3/BallMaterial"
+EXP3_MATERIAL_CATCHER_PATH = "/World/exp3/CatcherMaterial"
+EXP3_JOINT_PATH = "/World/exp3/RevoluteJoint"
+
+EXP3_DEFAULT_BALL_MASS = 0.0165     # kg  (PASCO ME-6825A ≈ 16.5 g steel ball)
+EXP3_DEFAULT_PEND_MASS = 0.1536     # kg  (PASCO ME-6829 ≈ 153.6 g catcher)
+EXP3_DEFAULT_V0 = 5.0               # m/s (muzzle velocity, cock position 3)
+EXP3_DEFAULT_L = 0.30               # m   pivot-to-CM distance
+
+EXP3_PIVOT_HEIGHT = 0.80            # m   pivot above floor (world-Z)
+EXP3_GROUND_Z = -0.24               # m
+EXP3_BALL_SIZE = 0.025              # m   cube side (~2.5 cm, approximates Ø25 mm ball)
+EXP3_ROD_THICKNESS = 0.010          # m   rod cross-section (square)
+EXP3_CATCHER_W = 0.08               # m   catcher outer width/depth (X,Y)
+EXP3_CATCHER_H = 0.08               # m   catcher outer height (Z)
+EXP3_CATCHER_WALL_T = 0.010         # m   wall thickness
+EXP3_LAUNCHER_GAP = 0.04            # m   gap between launcher muzzle and catcher
+EXP3_BALL_SPAWN_OFFSET = 0.015      # m   ball spawn offset in −X from catcher front
+EXP3_SOLVER_POS_ITERS = 96
+EXP3_SOLVER_VEL_ITERS = 48
+EXP3_WARMUP_SECONDS = 0.05          # short settle before firing
+EXP3_AUTO_SETTLE_SECONDS = 6.0      # safety timeout for "settled" phase
+
 # Experiment 7 — momentum conservation (two-cart collision)
 EXP7_CART1_PATH = "/World/exp7/cart1"
 EXP7_CART2_PATH = "/World/exp7/cart2"
@@ -88,6 +187,56 @@ EXP7_CART2_INIT_POS = (0.50, 0.0, 0.03)
 EXP7_WARMUP_SECONDS = 0.15
 EXP7_SOLVER_POS_ITERS = 64
 EXP7_SOLVER_VEL_ITERS = 32
+
+# Experiment 8 — resonance in air column (driven 1-D wave equation)
+# A 1-D scalar wave equation is integrated by a finite-difference leapfrog
+# scheme in the telemetry loop; the result drives the visible position of N
+# kinematic "air-slice" rigid bodies arranged along the tube in Isaac Sim.
+# Physics:
+#     ∂²u/∂t² = c² ∂²u/∂x² − 2 γ ∂u/∂t
+#     Speaker end  (x = 0):  u(0, t) = A sin(2π f t)      (Dirichlet)
+#     Closed end   (x = L):  u(L, t) = 0                   (Dirichlet)
+#     Open end     (x = L):  ∂u/∂x|_L = 0                  (Neumann)
+# Resonance (closed tube):  L + 0.3 d = (2n − 1) λ/4,  n = 1, 2, 3, …
+# Resonance (open tube):    L + 0.6 d = n λ/2,         n = 1, 2, 3, …
+#
+# To keep the solver stable at the native PhysX 240 Hz rate we scale the sound
+# speed down (c_sim ≪ 340 m/s) and apply the same scale factor to the driver
+# frequency. The dimensionless ratio f·L/c is preserved, so every resonance
+# pattern faithfully reproduces the real lab.
+EXP8_ROOT_PATH = "/World/exp8"
+EXP8_TUBE_PATH = "/World/exp8/tube"
+EXP8_SPEAKER_PATH = "/World/exp8/speaker"
+EXP8_DIAPHRAGM_PATH = "/World/exp8/diaphragm"
+EXP8_PISTON_PATH = "/World/exp8/piston"
+EXP8_SLICE_ROOT = "/World/exp8/slices"
+EXP8_SLICE_PATH_TEMPLATE = "/World/exp8/slices/slice_{:02d}"
+EXP8_MARKER_ROOT = "/World/exp8/markers"
+EXP8_MARKER_PATH_TEMPLATE = "/World/exp8/markers/marker_{:02d}"
+
+EXP8_N_SLICES = 48                       # spatial grid nodes (interior)
+EXP8_TUBE_TOTAL_LENGTH = 1.20            # m   physical tube length (PASCO 120 cm)
+EXP8_TUBE_DIAMETER = 0.040               # m   inner diameter d (≈ 4 cm)
+EXP8_TUBE_WALL = 0.0025                  # m   wall thickness (visual)
+EXP8_TUBE_BASE_X = 0.0                   # m   speaker-end x-position
+EXP8_TUBE_Y = 0.0                        # m   tube centre-line Y
+EXP8_TUBE_Z = 0.40                       # m   tube centre-line above floor
+EXP8_GROUND_Z = -0.02                    # m   stand + ground clearance
+EXP8_SLICE_DRAW_RADIUS = 0.014           # m   visual sphere radius
+EXP8_AMP_SCALE = 6.0                     # dimensionless visual magnification
+
+EXP8_C_SIM = 20.0                        # m/s  simulated speed of sound
+EXP8_C_REAL = 340.0                      # m/s  real speed of sound (reference)
+EXP8_FREQ_SCALE = EXP8_C_SIM / EXP8_C_REAL
+EXP8_DEFAULT_LENGTH_CM = 50.0
+EXP8_DEFAULT_FREQUENCY = 170.0           # Hz  real-world frequency (≈ f₁ of 50 cm closed tube)
+EXP8_DEFAULT_AMPLITUDE_MM = 1.5          # mm  speaker diaphragm excursion
+EXP8_DEFAULT_DAMPING = 0.8               # 1/s wave-equation damping γ
+EXP8_DEFAULT_MODE = "closed"             # "closed" or "open"
+EXP8_PHYS_SUBSTEPS = 12                  # FDM sub-steps per wave-loop tick
+EXP8_WAVE_TICK_HZ = 120.0                # Hz  wave-solver update rate
+EXP8_TELEMETRY_HISTORY = 256             # samples kept for probe trace
+EXP8_RESONANCE_THRESHOLD = 3.0           # amp ratio (RMS / drive) ⇒ "resonant"
 
 # Replicator
 REPLICATOR_INIT_MAX_RETRIES = 3

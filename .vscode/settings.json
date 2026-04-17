@@ -1,0 +1,21 @@
+{
+  "remote.autoForwardPorts": true,
+  "remote.autoForwardPortsSource": "hybrid",
+  "remote.portsAttributes": {
+    "5173": {
+      "label": "Frontend (Vite)",
+      "onAutoForward": "notify",
+      "elevateIfNeeded": false
+    },
+    "8080": {
+      "label": "WebRTC HTTP",
+      "onAutoForward": "silent",
+      "elevateIfNeeded": false
+    },
+    "30000": {
+      "label": "WebSocket",
+      "onAutoForward": "silent",
+      "elevateIfNeeded": false
+    }
+  }
+}

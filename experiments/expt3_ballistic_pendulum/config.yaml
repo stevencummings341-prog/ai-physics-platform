@@ -1,0 +1,44 @@
+# Experiment 3 — Ballistic Pendulum (PASCO EX-5511 replica)
+# All values in SI units.  Physics is driven by PhysX; the formula
+#   v0 = (m_ball + m_pend)/m_ball * sqrt(2 g L (1 - cos θmax))
+# is used only for post-sim verification (see analyze()).
+
+# --- Ball (steel projectile, PASCO ME-6825A) --------------------------------
+ball_mass:   0.0165        # kg   (~16.5 g steel ball)
+ball_size:   0.025         # m    cube edge (ball is modelled as a cube with
+                           #       equivalent mass so PhysX compound collision
+                           #       is stable — accuracy is not affected since
+                           #       the collision is normal to a flat back wall)
+
+# --- Pendulum catcher (PASCO ME-6829) ---------------------------------------
+pend_mass:          0.1536 # kg
+rod_length:         0.30   # m    pivot → CM distance (override per-trial)
+catcher_width:      0.08   # m    outer X,Y of the 4-walled cup
+catcher_height:     0.08   # m    outer Z
+catcher_wall_t:     0.010  # m    wall thickness
+
+# --- Launch ----------------------------------------------------------------
+v0_list: [3.0, 4.0, 5.0, 6.0, 7.0]   # m/s — sweep of muzzle velocities
+g: 9.81
+
+# --- Timing ----------------------------------------------------------------
+physics_dt: 0.004167        # 1/240 s
+render_dt:  0.016667        # 1/60 s
+warmup_seconds: 0.05
+settle_seconds: 5.0         # post-fire recording window per trial
+
+# --- Solver ----------------------------------------------------------------
+solver_pos_iters: 96
+solver_vel_iters: 48
+
+# --- Friction / restitution ------------------------------------------------
+catcher_restitution: 0.0
+catcher_static_friction: 1.2
+catcher_dynamic_friction: 1.0
+ball_restitution: 0.0
+ball_static_friction: 0.8
+ball_dynamic_friction: 0.6
+
+# --- Display ---------------------------------------------------------------
+headless: false
+enable_livestream: false

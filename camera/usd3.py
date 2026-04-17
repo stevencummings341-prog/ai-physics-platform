@@ -1,43 +1,46 @@
-"""
-Isaac Sim 相机设置脚本 - 实验3 (Quadcopter Navigation)
+"""Isaac Sim camera preset — Experiment 3 (Ballistic Pendulum).
+
+Matches the procedural scene built by core/webrtc_server.py
+(_setup_exp3_scene). The pendulum swings in the XZ plane (y≈0), the stand
+is offset to +Y, and the launcher sits on −X. Camera is placed on the
+−X −Y side at modest elevation to see both the barrel and the swing arc.
 """
 
 import omni.usd
 from pxr import UsdGeom, Gf
 
+
+def _build_lookat(eye: Gf.Vec3d, target: Gf.Vec3d,
+                  up: Gf.Vec3d = Gf.Vec3d(0, 0, 1)) -> Gf.Matrix4d:
+    backward = (eye - target).GetNormalized()
+    right = (up ^ backward).GetNormalized()
+    cam_up = (backward ^ right).GetNormalized()
+    m = Gf.Matrix4d(1)
+    m[0, 0], m[0, 1], m[0, 2] = right[0], right[1], right[2]
+    m[1, 0], m[1, 1], m[1, 2] = cam_up[0], cam_up[1], cam_up[2]
+    m[2, 0], m[2, 1], m[2, 2] = backward[0], backward[1], backward[2]
+    m[3, 0], m[3, 1], m[3, 2] = eye[0], eye[1], eye[2]
+    return m
+
+
 def set_camera():
     stage = omni.usd.get_context().get_stage()
-    camera_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
-
-    if not camera_prim.IsValid():
-        print("相机未找到!")
+    cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+    if not cam_prim or not cam_prim.IsValid():
+        print("exp3 camera: /OmniverseKit_Persp not found")
         return
 
-    camera = UsdGeom.Camera(camera_prim)
-    xform = UsdGeom.Xformable(camera_prim)
+    eye = Gf.Vec3d(-0.75, -1.35, 0.70)
+    target = Gf.Vec3d(0.0, 0.0, 0.55)
 
-    # 清除现有变换操作，重新设置
+    camera = UsdGeom.Camera(cam_prim)
+    xform = UsdGeom.Xformable(cam_prim)
     xform.ClearXformOpOrder()
+    xform.AddTransformOp().Set(_build_lookat(eye, target))
+    camera.GetFocalLengthAttr().Set(22.0)
+    camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10_000_000.0))
 
-    translate_op = xform.AddTranslateOp()
-    translate_op.Set(Gf.Vec3d(-0.5595557474992315, 6.8671199240925995, 3.155289238428258))
-
-    # 设置旋转（欧拉角）
-    rotate_op = xform.AddRotateXYZOp()
-    rotate_op.Set(Gf.Vec3f(65.40237426757812, -1.0871036330243472e-13, -179.54379272460938))
-
-    # 设置裁剪范围（近裁剪面, 远裁剪面）
-    camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.009999999776482582, 10000000.0))
-
-    # 设置焦距
-    camera.GetFocalLengthAttr().Set(18.14756202697754)
-
-    print("✓ 相机设置已应用!")
-    print("  位置: (-0.5595557474992315, 6.8671199240925995, 3.155289238428258)")
+    print(f"exp3 camera applied  eye={eye}  target={target}")
 
 
-
-    print("✓ 相机设置已应用 - 实验3!")
-
-# 运行设置
 set_camera()

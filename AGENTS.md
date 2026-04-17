@@ -110,7 +110,7 @@ Browser → `frontend/` → WebSocket → `core/webrtc_server.py` → Isaac Sim 
 | 1 | Angular Momentum | ✅ | ✅ | Full |
 | 2 | Large Pendulum | ✅ | ✅ | Full (procedural RK4 + batch sweep) |
 | 3 | Ballistic Pendulum | 🔒 | - | Stub |
-| 4 | Driven Damped | 🔒 | - | Stub |
+| 4 | Driven Damped | ✅ | - | Full (PhysX torsional drive + resonance telemetry) |
 | 5 | Rotational Inertia | 🔒 | - | Stub |
 | 6 | Centripetal Force | 🔒 | - | Stub |
 | 7 | Momentum Conservation | ✅ | ✅ | Full (procedural scene + telemetry) |
