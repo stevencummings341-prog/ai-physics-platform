@@ -21,3 +21,6 @@ frontend/dist/
 # Local snapshot / bundle archives
 *_snapshot.tar.gz
 ai_physics_platform_bundle.tar.gz
+
+# Persistent SSH keys (do NOT publish secrets)
+.ssh-persist/
