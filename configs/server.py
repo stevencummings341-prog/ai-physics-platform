@@ -19,7 +19,6 @@ def _detect_lan_ip() -> str:
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CAMERA_SCRIPT_DIR = os.path.join(PROJECT_ROOT, "camera")
 
 # Detect or override via env
 HOST_IP = os.getenv("PHYS_HOST_IP", _detect_lan_ip())
@@ -170,6 +169,76 @@ EXP3_SOLVER_POS_ITERS = 96
 EXP3_SOLVER_VEL_ITERS = 48
 EXP3_WARMUP_SECONDS = 0.05          # short settle before firing
 EXP3_AUTO_SETTLE_SECONDS = 6.0      # safety timeout for "settled" phase
+
+# Experiment 6 — centripetal force (PhysX-native rotating spring)
+#
+# Physical apparatus (PASCO ME-8952 style): a mass is attached to a rotating
+# horizontal arm by a spring. As the rotor spins at angular velocity ω the
+# mass tries to fly outward; the spring stretches until the spring force
+# balances the centripetal force required to keep the mass in circular
+# motion.  The stretched spring's force *is* the measured centripetal
+# force (F_c = k · Δx).
+#
+# PhysX implementation — the motion is integrated, NOT derived from F=mv²/r:
+#   • Kinematic "rotor" Xform at origin that is spun about +Z at a user-set
+#     angular velocity by an async pose-driver task (same pattern as the
+#     exp4 driver arm).
+#   • Dynamic "bob" rigid body positioned at the target radius along the
+#     rotor's local +X axis.
+#   • Prismatic joint between rotor (body0) and bob (body1) along the
+#     rotor's local X axis, with a UsdPhysics.DriveAPI "linear" configured
+#     with stiffness = k_spring, damping = c, target_position = r_target.
+#   • PhysX integrates the bob's horizontal motion.  As the rotor spins the
+#     kinematic pose changes each tick → PhysX sees the constraint move →
+#     the bob is accelerated tangentially → centrifugal tendency stretches
+#     the spring → steady-state r_actual ≈ k r_target / (k − m ω²).
+#   • A frictionless horizontal table supports the bob against gravity
+#     (gravity remains ON, per project rule).  Bob translation along Z and
+#     rotation about X/Y are locked for numerical stability.
+#
+# Measured telemetry (all derived from PhysX state, never from the formula):
+#   r_actual  = √(x²+y²) of bob
+#   v_tan    = horizontal |v| of bob
+#   F_meas   = k · (r_actual − r_target)        (the real spring force)
+#   F_check  = m · v_tan² / r_actual            (force the bob experiences)
+#   F_theory = m · ω² · r_target                (analytic reference)
+EXP6_ROOT_PATH = "/World/exp6"
+EXP6_ANCHOR_PATH = "/World/exp6/world_anchor"
+EXP6_ROTOR_PATH = "/World/exp6/rotor"              # kinematic rigid body (body0 of joint)
+EXP6_VISUAL_FRAME_PATH = "/World/exp6/visual_frame"  # plain Xform that rotates in sync
+EXP6_BOB_PATH = "/World/exp6/bob"
+EXP6_TABLE_PATH = "/World/exp6/table"
+EXP6_SHAFT_VISUAL_PATH = "/World/exp6/visual_frame/shaft"
+EXP6_ARM_VISUAL_PATH = "/World/exp6/visual_frame/arm"
+EXP6_COUNTER_VISUAL_PATH = "/World/exp6/visual_frame/counter_mass"
+EXP6_SPRING_VISUAL_PATH = "/World/exp6/visual_frame/spring"
+EXP6_HUB_VISUAL_PATH = "/World/exp6/visual_frame/hub"
+EXP6_PRISM_JOINT_PATH = "/World/exp6/PrismaticJoint"
+EXP6_TABLE_MATERIAL_PATH = "/World/exp6/TableMaterial"
+EXP6_BOB_MATERIAL_PATH = "/World/exp6/BobMaterial"
+
+EXP6_DEFAULT_MASS = 0.030            # kg   (30 g, matches classmate default)
+EXP6_DEFAULT_RADIUS = 0.15           # m    (target spring rest length)
+EXP6_DEFAULT_OMEGA = 5.0             # rad/s  (initial rotor speed)
+EXP6_DEFAULT_SPRING_K = 250.0        # N/m  (stiff spring so r_actual ≈ r_target)
+EXP6_DEFAULT_DAMPER = 0.4            # N·s/m
+EXP6_DEFAULT_RAMP_TIME = 1.2         # s    (linear ramp from 0 to target ω)
+
+EXP6_TABLE_Z = 0.70                  # m    (table top — bob rides on this)
+EXP6_GROUND_Z = -0.24                # m
+EXP6_TABLE_RADIUS = 0.55             # m    (>> max bob radius)
+EXP6_TABLE_THICKNESS = 0.02          # m
+EXP6_BOB_SIZE = 0.035                # m    cube side (≈ 3.5 cm)
+EXP6_ARM_THICKNESS = 0.015           # m    arm cross-section
+EXP6_SHAFT_RADIUS = 0.020            # m    visual shaft half-width
+EXP6_PIVOT_HEIGHT = 0.18             # m    shaft height above table top
+EXP6_PRISM_LIMIT_MIN = -0.10         # m    inward slack
+EXP6_PRISM_LIMIT_MAX = 0.60          # m    outward limit (safety)
+
+EXP6_ROTOR_UPDATE_HZ = 240.0         # Hz   rotor pose-driver update rate
+EXP6_SOLVER_POS_ITERS = 128
+EXP6_SOLVER_VEL_ITERS = 64
+EXP6_WARMUP_SECONDS = 0.15
 
 # Experiment 7 — momentum conservation (two-cart collision)
 EXP7_CART1_PATH = "/World/exp7/cart1"

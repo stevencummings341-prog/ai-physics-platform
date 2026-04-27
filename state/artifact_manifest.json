@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-03-28",
+  "last_updated": "2026-04-27-architecture-cleanup",
   "continuity_artifacts": {
     "start_here": "docs/START_HERE.md",
     "project_state": "docs/PROJECT_STATE.md",
@@ -15,23 +15,38 @@
     "cursor_rules": [
       ".cursor/rules/project.mdc",
       ".cursor/rules/context-handoff.mdc",
+      ".cursor/rules/deep-thinking.mdc",
       ".cursor/rules/isaac-sim.mdc"
     ]
   },
   "project_artifact_roots": {
     "framework_code": "core",
+    "config": "configs",
     "experiment_code": "experiments",
-    "interactive_launchers": [
-      "expt1_angular_momentum_sim.py",
-      "expt7_momentum_sim.py"
-    ],
-    "reports": "report_templates",
-    "generated_outputs": "outputs",
-    "teammate_assets": "Experiment"
+    "web_frontend": "frontend",
+    "usd_assets": "Experiment",
+    "report_templates": "report_templates",
+    "camera_helpers": "camera",
+    "vr_integration": "vr",
+    "share_binaries": "launchers/bin",
+    "reference_pdfs": "docs/reference",
+    "legacy_archive": "docs/legacy",
+    "generated_outputs": "outputs"
+  },
+  "entry_points": {
+    "frontend_launcher": "launch.sh",
+    "isaac_launcher": "start_isaac.sh",
+    "isaac_script_editor": "start_server.py",
+    "batch_cli": "run.py",
+    "public_share": "share.sh",
+    "env_setup": "setup.sh",
+    "ssh_bootstrap": "bootstrap.sh"
   },
   "policy": [
     "Continuity artifacts are version-controlled project assets",
     "Generated outputs are not the canonical source of architecture truth",
-    "New agents should start from continuity_artifacts before exploring code"
+    "New agents should start from continuity_artifacts before exploring code",
+    "The web-interactive path (frontend + core/webrtc_server.py) is canonical for all 8 experiments",
+    "The batch CLI (run.py + experiments/exptN_*/sim.py) is the secondary, reproducible-run path"
   ]
 }

@@ -1,0 +1,155 @@
+# Lab Report for Lab 5 -- Rotational Inertia (Physical Pendulum)
+
+**Author:** [Student Name]  
+**Student Number:** [Student ID]  
+**Date generated:** {{ summary.generated_at }}  
+**Simulation tool:** NVIDIA Isaac Sim / PhysX 5, Python/Matplotlib
+
+## 1  Objective
+
+The objective of this experiment was to investigate the period of a
+physical pendulum made from a uniform bar, and to use the measured period
+to determine the rotational inertia of the bar about the pivot and about
+its center of mass.
+
+## 2  Theory
+
+For a physical pendulum with total mass \(m\), pivot-to-center-of-mass
+distance \(x\), and rotational inertia \(I_\text{pivot}\), the
+small-amplitude period is
+
+\[
+T = 2\pi\sqrt{\frac{I_\text{pivot}}{mgx}}.
+\]
+
+For a uniform bar of length \(L\), the rotational inertia about its center
+of mass is
+
+\[
+I_\text{cm} = \frac{1}{12}mL^2.
+\]
+
+By the parallel-axis theorem,
+
+\[
+I_\text{pivot} = I_\text{cm} + mx^2.
+\]
+
+Therefore,
+
+\[
+T(x) = 2\pi\sqrt{\frac{L^2/12 + x^2}{gx}}.
+\]
+
+Differentiating \(T(x)\) gives the minimum-period pivot position
+
+\[
+x_\text{min} = \frac{L}{\sqrt{12}}.
+\]
+
+## 3  Method
+
+The web experiment modeled the physical pendulum as a PhysX dynamic
+uniform bar connected to a kinematic pivot by a horizontal revolute joint.
+Gravity was enabled, so the bar oscillated in the vertical plane after it
+was displaced by the selected initial angle.  The server recorded the
+time, angular displacement, angular velocity, rolling period estimate,
+mass, length, and pivot distance during the run.
+
+After the run, Python estimated the period from positive-going zero
+crossings of the angular displacement.  The measured period was then used
+to infer \(I_\text{pivot}\), and this value was compared with the
+geometric value from the parallel-axis theorem.
+
+## 4  Raw Data and Derived Quantities
+
+The full time series is exported as `exp5_raw_timeseries.csv`.  The table
+below lists the main parameters and derived quantities used in the
+analysis.
+
+| Quantity | Value |
+|---|---:|
+| Number of samples | {{ summary.n_samples }} |
+| Duration (s) | {{ "%.3f"|format(summary.duration_s) }} |
+| Mass \(m\) (kg) | {{ "%.5f"|format(summary.mass_kg) }} |
+| Bar length \(L\) (m) | {{ "%.5f"|format(summary.length_m) }} |
+| Pivot distance \(x\) (m) | {{ "%.5f"|format(summary.pivot_distance_m) }} |
+| Initial angle (deg) | {{ "%.3f"|format(summary.theta0_deg) }} |
+| Peak angle (deg) | {{ "%.3f"|format(summary.theta_peak_deg) }} |
+| Measured period \(T\) (s) | {{ "%.5f"|format(summary.period_measured_s) }} |
+| Theoretical period \(T(x)\) (s) | {{ "%.5f"|format(summary.period_theory_s) }} |
+| Period error (%) | {{ "%.3f"|format(summary.period_error_pct) }} |
+| \(I_\text{pivot}\) from geometry (kg m^2) | {{ "%.8f"|format(summary.I_pivot_geom_kg_m2) }} |
+| \(I_\text{pivot}\) from period (kg m^2) | {{ "%.8f"|format(summary.I_pivot_period_kg_m2) }} |
+| \(I_\text{cm}\) from geometry (kg m^2) | {{ "%.8f"|format(summary.I_cm_geom_kg_m2) }} |
+| \(I_\text{cm}\) from period (kg m^2) | {{ "%.8f"|format(summary.I_cm_period_kg_m2) }} |
+| Theoretical \(x_\text{min}\) (m) | {{ "%.5f"|format(summary.x_min_theory_m) }} |
+| Theoretical minimum period (s) | {{ "%.5f"|format(summary.T_min_theory_s) }} |
+
+## 5  Figures
+
+![Angle and angular velocity](./{{ plot_files.timeseries }})
+
+**Figure 1:** Angular displacement and angular velocity versus time.
+
+![Period curve](./{{ plot_files.period_curve }})
+
+**Figure 2:** Theoretical period curve \(T(x)\), theoretical minimum
+position, and the selected run's measured period.
+
+![Inertia comparison](./{{ plot_files.inertia }})
+
+**Figure 3:** Rotational inertia from geometry compared with rotational
+inertia inferred from the measured period.
+
+![Cycle periods](./{{ plot_files.cycle_periods }})
+
+**Figure 4:** Cycle-by-cycle period estimates from zero crossings.
+
+## 6  Data and Error Analysis
+
+The measured period was {{ "%.5f"|format(summary.period_measured_s) }} s,
+while the small-amplitude theoretical period was
+{{ "%.5f"|format(summary.period_theory_s) }} s.  The percent difference
+was {{ "%.3f"|format(summary.period_error_pct) }}%.
+
+Using \(I_\text{pivot}=T^2mgx/(4\pi^2)\), the period measurement gives
+\(I_\text{pivot}={{ "%.8f"|format(summary.I_pivot_period_kg_m2) }}\)
+kg m^2.  The geometric value from the parallel-axis theorem is
+{{ "%.8f"|format(summary.I_pivot_geom_kg_m2) }} kg m^2, giving a percent
+difference of {{ "%.3f"|format(summary.I_pivot_error_pct) }}%.
+
+The theoretical minimum-period distance is
+{{ "%.5f"|format(summary.x_min_theory_m) }} m.  The selected pivot
+distance was {{ "%.5f"|format(summary.pivot_distance_m) }} m, differing
+from the theoretical minimum by {{ "%.3f"|format(summary.x_vs_xmin_pct) }}%.
+
+The main uncertainty sources are finite telemetry sampling, zero-crossing
+interpolation, finite initial amplitude, numerical compliance of the
+revolute joint, and any damping in the simulated contact/constraint
+solver.
+
+## 7  Conclusion
+
+The result supports the physical-pendulum model.  The measured period is
+consistent with the theoretical expression for a uniform bar at small
+amplitude, and the rotational inertia inferred from the period is
+consistent with the geometric inertia after applying the parallel-axis
+theorem.
+
+1. The pivot distance giving the minimum period is \(x=L/\sqrt{12}\).
+2. A bar with different mass but the same dimensions has the same
+   minimum-period distance because mass cancels from the period formula.
+3. The theory is expected to fit best at small amplitude; larger angles
+   produce finite-amplitude corrections.
+
+## 8  Appendix
+
+Exported files:
+
+- `Lab_Report_Rotational_Inertia_Physical_Pendulum.pdf`
+- `Expt5_Rotational_Inertia_Report.md`
+- `exp5_raw_timeseries.csv`
+- `exp5_cycle_periods.csv`
+- Python-generated PNG figures
+- ZIP package containing all generated files

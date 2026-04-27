@@ -1,5 +1,8 @@
+# ── Generated outputs ────────────────────────────────────────
 outputs/
 outputs_expt*
+
+# ── Python ──────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -7,20 +10,30 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# ── OS / editor ─────────────────────────────────────────────
 .DS_Store
 *.log
 
-# Frontend
+# ── Frontend ────────────────────────────────────────────────
 frontend/node_modules/
 frontend/dist/
+frontend/tsconfig.tsbuildinfo
+# Compiled JS from vite.config.ts (we ship the .ts source only)
+frontend/vite.config.js
+
+# ── Runtime PIDs / logs ─────────────────────────────────────
 .frontend.pid
 .vite.log
 .isaacsim.pid
 .isaacsim.log
 
-# Local snapshot / bundle archives
+# ── Public-share state ──────────────────────────────────────
+.share/
+
+# ── Local snapshot / bundle archives ────────────────────────
 *_snapshot.tar.gz
 ai_physics_platform_bundle.tar.gz
 
-# Persistent SSH keys (do NOT publish secrets)
+# ── Persistent SSH keys (never publish) ─────────────────────
 .ssh-persist/

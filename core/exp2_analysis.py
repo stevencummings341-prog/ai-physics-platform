@@ -4,7 +4,9 @@ Shared between the web interactive server (core/webrtc_server.py) and the
 batch CLI mode (experiments/expt2_large_pendulum/sim.py).  All functions
 are pure Python — no Isaac Sim dependency.
 
-Ported faithfully from the classmate's expt2_large_amplitude_pendulum_sim_fixed.py.
+Originally ported from the classmate's standalone PASCO ME-9889 simulation;
+now the canonical source for both batch (experiments/expt2_large_pendulum/)
+and web-interactive (core/webrtc_server.py) paths.
 """
 
 from __future__ import annotations

@@ -8,8 +8,13 @@
 # Usage:
 #   ./launch.sh              Start frontend only
 #   ./launch.sh --all        Start frontend + Isaac Sim (needs DISPLAY)
+#   ./launch.sh --all --share   Same as --all, then also open a public
+#                               share tunnel and print the URL (one-shot
+#                               command for daily use: start everything,
+#                               get the hyperlink, send it to the other
+#                               team)
 #   ./launch.sh --isaac-only Start Isaac Sim only
-#   ./launch.sh --stop       Stop all services
+#   ./launch.sh --stop       Stop all services (also stops share tunnel)
 #   ./launch.sh --status     Show running services
 #   ./launch.sh --open       Re-trigger Cursor SSH port forward for 5173
 #                            (run this if the browser still can't open
@@ -105,6 +110,8 @@ trigger_cursor_forward() {
 
 stop_isaac() { "$PROJECT_ROOT/start_isaac.sh" --stop >/dev/null 2>&1 || true; }
 
+stop_share() { "$PROJECT_ROOT/share.sh" --stop >/dev/null 2>&1 || true; }
+
 # ── Status ───────────────────────────────────────────────────
 
 show_status() {
@@ -141,11 +148,22 @@ show_status() {
 
 # ── Dispatch ─────────────────────────────────────────────────
 
+START_ISAAC=0
+START_SHARE=0
+for arg in "$@"; do
+    case "$arg" in
+        --all)          START_ISAAC=1 ;;
+        --share)        START_SHARE=1 ;;
+        --isaac-only)   "$PROJECT_ROOT/start_isaac.sh"; exit 0 ;;
+        --stop|stop)    stop_share; stop_frontend; stop_isaac; exit 0 ;;
+        --status)       show_status; exit 0 ;;
+        --open|--forward)
+            :  # handled below so we can still fail cleanly when 5173 is down
+            ;;
+    esac
+done
+
 case "${1:-}" in
-    --all)        START_ISAAC=1 ;;
-    --isaac-only) "$PROJECT_ROOT/start_isaac.sh"; exit 0 ;;
-    --stop|stop)  stop_frontend; stop_isaac; exit 0 ;;
-    --status)     show_status; exit 0 ;;
     --open|--forward)
         if ! port_open 5173; then
             echo -e "  ${YELLOW}! Frontend is not running on :5173. Run ${CYAN}./launch.sh${YELLOW} first.${NC}"
@@ -157,6 +175,9 @@ case "${1:-}" in
         exit 0
         ;;
 esac
+
+# If only one arg was given and it matched above (stop/status/open), we've already exited.
+# Continue to main launch path.
 
 # ============================================================
 # Preflight: check that setup.sh has been run
@@ -321,13 +342,30 @@ else
     echo -e "  Open in browser: ${CYAN}http://${IP}:5173${NC}"
 fi
 
+# ── 4. Optional: public share tunnel ─────────────────────────
+
+if [ "${START_SHARE:-0}" = "1" ]; then
+    echo ""
+    echo -e "${BOLD}[Extra] Opening public share tunnel ...${NC}"
+    # share.sh is idempotent: if a tunnel is already up, it prints the URL
+    # and exits. Otherwise it starts a new background tunnel.
+    if ! "$PROJECT_ROOT/share.sh" --status 2>/dev/null | grep -q 'RUNNING (PID'; then
+        "$PROJECT_ROOT/share.sh"
+    else
+        echo -e "  ${GREEN}✓ Share tunnel already running.${NC}"
+        "$PROJECT_ROOT/share.sh" --status
+    fi
+fi
+
 echo ""
 echo -e "${BOLD}Commands:${NC}"
-echo -e "  ${CYAN}./launch.sh --status${NC}   Check services"
-echo -e "  ${CYAN}./launch.sh --stop${NC}     Stop all"
-echo -e "  ${CYAN}./launch.sh --open${NC}     Re-trigger Cursor port forward if the URL won't open"
-echo -e "  ${CYAN}cat .vite.log${NC}          Vite log"
-echo -e "  ${CYAN}tail -f .isaacsim.log${NC}  Isaac Sim log"
+echo -e "  ${CYAN}./launch.sh --status${NC}      Check services"
+echo -e "  ${CYAN}./launch.sh --stop${NC}        Stop all (frontend + Isaac + share)"
+echo -e "  ${CYAN}./launch.sh --open${NC}        Re-trigger Cursor port forward if the URL won't open"
+echo -e "  ${CYAN}./share.sh${NC}                Open a public URL to send the other team"
+echo -e "  ${CYAN}./share.sh --url${NC}          Print the current public URL"
+echo -e "  ${CYAN}cat .vite.log${NC}             Vite log"
+echo -e "  ${CYAN}tail -f .isaacsim.log${NC}     Isaac Sim log"
 echo ""
 
 # Second nudge 2 s later: re-print the URL and re-invoke the browser

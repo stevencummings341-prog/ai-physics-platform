@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-04-17-exp4",
+  "last_updated": "2026-04-27-architecture-cleanup",
   "project_name": "AI Physics Experiment Platform",
   "project_goal": "Full-stack physics experiment platform: Isaac Sim backend + React web frontend with WebRTC streaming, real-time telemetry, and interactive control.",
   "architecture": {
@@ -7,7 +7,8 @@
     "backend": "core/webrtc_server.py running inside Isaac Sim",
     "communication": "WebSocket :30000 (control/telemetry) + WebRTC :8080 (video)",
     "launch": "./launch.sh (frontend) + start_server.py (Isaac Sim Script Editor)",
-    "config": "configs/server.py with env-var overrides"
+    "config": "configs/server.py with env-var overrides",
+    "layout_canonicalised_on": "2026-04-27 — see docs/handoff/2026-04-27-architecture-cleanup.md"
   },
   "mandatory_read_order": [
     "docs/START_HERE.md",
@@ -19,9 +20,9 @@
     ".cursor/rules/project.mdc"
   ],
   "current_focus": [
-    "Implement remaining experiments (6, 8) — USD physics setup + server telemetry wiring",
+    "All 8 experiments implemented (web interactive); 1/2/3/7 also have batch CLI",
     "VR hand tracking integration — Meta Quest 3S → UDP → WebRTC server → experiment interaction",
-    "Keep frontend locked cards for unimplemented experiments",
+    "Architecture is clean (no dead root scripts, no duplicated PDFs, no orphaned packages)",
     "Preserve project continuity across agent sessions"
   ],
   "experiments": {
@@ -37,7 +38,7 @@
       "web_ui": true,
       "server_telemetry": "full",
       "batch_mode": true,
-      "notes": "Procedural RK4 VisualPendulum (no PhysX joints). Classmate code integrated: full θ/ω/α telemetry, period detection via zero-crossing, series expansion comparison, batch mode with multi-phase sweep + Markdown report."
+      "notes": "Procedural RK4 VisualPendulum (no PhysX joints). Classmate code integrated: full θ/ω/α telemetry, period detection via zero-crossing, series expansion comparison, batch mode with multi-phase sweep + Markdown report, and web export of a PHY1002-style PDF report populated from Python-generated plots/data."
     },
     "expt3_ballistic_pendulum": {
       "status": "implemented",
@@ -50,21 +51,22 @@
       "status": "implemented",
       "web_ui": true,
       "server_telemetry": "full",
-      "batch_mode": false,
-      "notes": "Driven damped torsional oscillator implemented procedurally in PhysX. Kinematic pivot + dynamic aluminium disk (MassAPI with explicit I_z = ½MR²) joined by a Z-axis RevoluteJoint with UsdPhysics.DriveAPI: stiffness=κ (torsional spring, N·m/rad) and damping=b=γ·I (magnetic brake). Sinusoidal targetPosition = A·sin(2πf·t) updated at 120 Hz → PhysX integrates I·θ̈ + b·θ̇ + κ·θ = κ·A·sin(ωt). Controls: drive frequency f, damping γ, driver amplitude A, spring κ. Buttons: Start Driver / Free Oscillation (initial ω kick with A=0) / Reset. Telemetry: live θ, ω, driver angle θ_d, peak |θ|, and analytical reference values (f₀, f_d, Q = √(κI)/b, theory amplitude, phase lag)."
+      "batch_mode": "report-only",
+      "notes": "Driven damped torsional oscillator implemented procedurally in PhysX. Kinematic pivot + dynamic aluminium disk (MassAPI with explicit I_z = ½MR²) joined by a Z-axis RevoluteJoint with UsdPhysics.DriveAPI: stiffness=κ (torsional spring, N·m/rad) and damping=b=γ·I (magnetic brake). Sinusoidal targetPosition = A·sin(2πf·t) updated at 120 Hz → PhysX integrates I·θ̈ + b·θ̇ + κ·θ = κ·A·sin(ωt). Controls: drive frequency f, damping γ, driver amplitude A, spring κ. Buttons: Start Driver / Free Oscillation (initial ω kick with A=0) / Reset / Generate Lab Report. Telemetry: live θ, ω, driver angle θ_d, peak |θ|, and analytical reference values (f₀, f_d, Q = √(κI)/b, theory amplitude, phase lag). Lab-report pipeline (added 2026-04-27): core/exp4_report.py — RK4 ringdown + damped-sine LM fit, RK4 resonance sweeps for 3 damping levels, half-power FWHM extraction, linear-LS sinusoid fit for phase lag (within 0.1° of theory), 4 matplotlib figures, half-amplitude asymmetry index, formal Markdown report following the guideline.pdf rubric (Objective / Method / Raw Data / Data and Error Analysis / Conclusion), full instrumental error propagation (electronic balance, vernier caliper, manufacturer kappa, propagated I and f₀), and answering all six Expt_4.pdf questions. ZIP packaging of plots/CSVs/JSON/Markdown. Frontend Download PDF Report (added 2026-04-27): frontend/src/components/Exp4ReportPDF.tsx renders a 15-page CUHK-Shenzhen formal lab report with @react-pdf/renderer (Times-Roman fonts, codecogs LaTeX equations, academic top/mid/bottom-rule tables, cover page, fixed running header, page numbers) — same toolchain and visual language as Exp 1's Lab_Report_Angular_Momentum.pdf and Exp 2's Lab_Report_Large_Amplitude_Pendulum.pdf. The matplotlib PDF is retained inside the ZIP as an offline-readable backup."
     },
     "expt5_rotational_inertia": {
       "status": "implemented",
       "web_ui": true,
       "server_telemetry": "full",
       "batch_mode": false,
-      "notes": "Physical pendulum integrated from classmate code (实验5/expt5_pendulum_sim.py). Procedural PhysX scene: uniform bar on kinematic pivot via Y-axis revolute joint so gravity (-Z) produces real torque. Live telemetry: θ, ω, measured T, theoretical T = 2π√((L²/12 + x²)/(g·x)). Adjustable m, L, x, θ₀."
+      "notes": "Physical pendulum integrated from classmate code (实验5/expt5_pendulum_sim.py). Procedural PhysX scene: uniform bar on kinematic pivot via Y-axis revolute joint so gravity (-Z) produces real torque. Live telemetry: θ, ω, measured T, theoretical T = 2π√((L²/12 + x²)/(g·x)). Adjustable m, L, x, θ₀. Web report export (2026-04-27 redesign): backend records the run's time-series samples, Python/Matplotlib generates 4 PNG plots + CSV/Markdown/ZIP artifacts; frontend Exp5ReportPDF.tsx composes the formal PHY1002 lab-report PDF with @react-pdf/renderer (matching Exp1 typography: cover page, sections, LaTeX equations via codecogs, horizontal-line tables, headers, page numbers). The Python-side PdfPages PDF has been removed."
     },
     "expt6_centripetal_force": {
-      "status": "stub",
+      "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
-      "batch_mode": false
+      "server_telemetry": "full",
+      "batch_mode": false,
+      "notes": "Centripetal force via PhysX prismatic-spring model (replaces stub). Scene is procedural: kinematic rotor Xform spun about +Z by an async pose-driver at user-set ω (with a ~1.2 s linear ramp to avoid drive jitter); dynamic bob connected to the rotor via a USD PrismaticJoint along rotor-local X with a linear DriveAPI (stiffness=k, damping=c, target=r_target). PhysX integrates the bob motion — the spring stretches until F_spring = k·(r_actual − r_target) balances the centripetal requirement. Measured centripetal force is read directly from the spring extension, and cross-checked by m·v²/r derived from the bob's live PhysX state (no closed-form F=mv²/r fallback). Gravity ON; a frictionless table supports the bob; bob has Z-translation + X/Y rotation locked. Controls (set_exp6_mass, set_exp6_radius, set_exp6_omega, set_exp6_spring_k, set_exp6_damper) + Start/Stop/Reset + Export Lab Report (PDF). Telemetry includes centripetal_force, force_theory, force_kinematic, radius_actual, speed, omega, spring_extension, omega_critical = √(k/m), KE. Report export command export_exp6_report uses recorded PhysX telemetry, Python/Matplotlib plots, Markdown template report_templates/expt6_centripetal_force.md.j2, and returns plot data URLs. The primary user-facing PDF is now rendered in frontend/src/components/Exp6ReportPDF.tsx via @react-pdf/renderer using the formal Experiment 1-style layout; backend PdfPages PDF remains as fallback."
     },
     "expt7_momentum": {
       "status": "implemented",
@@ -74,16 +76,37 @@
       "notes": "Full web interactive: procedural scene, 4-trial state machine, per-cart telemetry, collision detection, PDF report. Integrated from classmate code."
     },
     "expt8_resonance": {
-      "status": "stub",
+      "status": "implemented",
       "web_ui": true,
-      "server_telemetry": "stub",
-      "batch_mode": false
+      "server_telemetry": "full",
+      "batch_mode": false,
+      "notes": "1-D wave equation (∂²u/∂t² = c² ∂²u/∂x² − 2γ ∂u/∂t) integrated by leapfrog FDM in core/exp8_analysis.py. N kinematic 'air-slice' rigid bodies along the tube visualise the wave. Closed/open ends switchable; resonance at L+0.3d=(2n−1)λ/4 (closed) or L+0.6d=nλ/2 (open). Speaker frequency, amplitude, length, damping all sliderable. Real-world frequency is shown to the user; under the hood we scale by EXP8_C_SIM/EXP8_C_REAL so the solver is stable at 240 Hz physics."
     }
+  },
+  "repository_layout": {
+    "entry_points": [
+      "launch.sh", "start_isaac.sh", "start_server.py", "share.sh",
+      "setup.sh", "bootstrap.sh", "run.py"
+    ],
+    "code_dirs": ["core/", "configs/", "frontend/", "experiments/", "report_templates/"],
+    "asset_dirs": ["Experiment/", "camera/", "vr/", "launchers/bin/"],
+    "doc_dirs": ["docs/", "state/"],
+    "gitignored": ["outputs/", "frontend/node_modules/", "frontend/dist/", ".isaacsim.log", ".vite.log", ".share/"]
   },
   "ports": {
     "frontend": 5173,
     "webrtc_http": 8080,
     "websocket": 30000
+  },
+  "public_share": {
+    "script": "./share.sh",
+    "purpose": "Expose the frontend to anyone on any network (other lab, campus LAN, off-campus) via an outbound tunnel. No client install or port forwarding on the viewer side.",
+    "default_provider": "bore.pub",
+    "fallback_provider_for_https": "localhost.run (./share.sh --via lhr)",
+    "binaries": ["launchers/bin/bore (v0.6.0 x86_64-musl)", "system ssh (for lhr)"],
+    "blocked_providers_note": "Cloudflare Quick Tunnel (trycloudflare.com) and ngrok are unreachable from this cluster; their IP ranges are blocked by egress. share.sh avoids both.",
+    "rate_limit_note": "Curling the public URL from INSIDE this container hits a conntrack/NAT limit after ~2 requests (traffic traverses egress twice). External viewers on the campus network or internet do NOT hit this — they only transit the egress once inbound. Always verify by asking a remote user to load the URL, not by curling from this shell.",
+    "video_fallback": "Frontend auto-falls-back from WebRTC (UDP, blocked by TCP tunnel) to WS-JPEG (/video_feed) after ~8 s. Remote viewers see a brief spinner, then live frames."
   },
   "how_to_add_experiment": [
     "1. Build USD physics in Experiment/expN/ (rigid bodies, joints, materials)",
@@ -101,9 +124,21 @@
     "Update this file when project direction or active priorities change",
     "Keep rule files and AGENTS.md versioned in git"
   ],
+  "stability": {
+    "layers_hardened": [
+      "WebSocket telemetry (heartbeat=15-20s, parallel per-client send with 0.5s timeout, dead-client sweeper, throttled error logging)",
+      "WebRTC video (multi-STUN, 250ms capture timeout with last-good-frame cache, 2s Replicator init cooldown, two-stage ICE recovery)",
+      "WS-JPEG fallback (heartbeat, fast retry on close)",
+      "Frontend WS service (exp-backoff reconnect, 15s heartbeat, 30s stale watchdog, replay enter_experiment, visibilitychange fast retry)",
+      "WebRTC viewer (restartIce + full reconnect, 6s stall watchdog, WS-JPEG \u2192 WebRTC upgrade probe)",
+      "ExperimentView (RECONNECTING status, post-reconnect parameter resync)"
+    ],
+    "documented_in": "docs/adr/ADR-0004-stability-hardening.md"
+  },
   "open_risks": [
-    "exp6, exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
+    "exp8 USD prim paths in webrtc_server.py are guesses — must match actual USD structure",
     "Experiment runtime behavior needs live Isaac Sim verification",
+    "exp6 kinematic rotor drives the prismatic joint via pose updates — if PhysX fails to pick up the changing constraint velocity at very high ω (> ~10 rad/s), increase EXP6_SOLVER_POS_ITERS further or switch the rotor to a dynamic body driven by a velocity target on a Z-axis revolute joint to the world anchor",
     "VR hand tracking requires same-LAN Quest 3S + open UDP 8888 — not yet live-tested with real headset"
   ],
   "continuity_snapshot": {

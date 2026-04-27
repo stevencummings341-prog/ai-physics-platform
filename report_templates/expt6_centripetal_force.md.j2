@@ -1,0 +1,140 @@
+# Lab Report for Lab 6 -- Centripetal Force
+
+**Author:** [Student Name]  
+**Student Number:** [Student ID]  
+**Date generated:** {{ summary.generated_at }}  
+**Simulation tool:** NVIDIA Isaac Sim / PhysX 5, Python/Matplotlib
+
+## 1  Objective
+
+The objective of this experiment was to study the relationship between
+centripetal force, mass, tangential speed, and radius for an object in
+uniform circular motion.  The experiment followed the PASCO centripetal
+force apparatus idea: a moving mass was constrained to rotate in a
+circle, and the inward force required for the circular motion was
+measured.
+
+## 2  Theory
+
+For an object of mass \(m\) moving at tangential speed \(v\) in a circle
+of radius \(r\), the required centripetal force is
+
+\[
+F_c = \frac{m v^2}{r}.
+\]
+
+Since \(v = \omega r\), the same relationship can be written as
+
+\[
+F_c = m \omega^2 r.
+\]
+
+Centripetal force is not an additional force.  It is the net inward
+force supplied by the real forces acting on the object.  In this
+simulation the real inward force is the spring constraint force, measured
+as
+
+\[
+F_\text{spring} = k \Delta x.
+\]
+
+## 3  Method
+
+The web experiment used a PhysX-native rotating spring model.  A
+kinematic rotor was spun at a user-selected angular velocity.  A dynamic
+bob rested on a frictionless table and was attached to the rotating frame
+by a prismatic joint with a linear drive.  The drive's stiffness and
+damping represented the spring tether.  PhysX integrated the bob's
+motion; the reported centripetal force was obtained from the measured
+spring extension rather than directly from the analytical formula.
+
+## 4  Raw Data
+
+The complete raw time series is exported as `exp6_raw_timeseries.csv`.
+The steady-state averages used in the analysis are listed below.
+
+| Quantity | Value |
+|---|---:|
+| Number of samples | {{ summary.n_samples }} |
+| Duration (s) | {{ "%.3f"|format(summary.duration_s) }} |
+| Steady-state start time (s) | {{ "%.3f"|format(summary.steady_start_s) }} |
+| Mass \(m\) (kg) | {{ "%.5f"|format(summary.mass_kg) }} |
+| Target radius \(r\) (m) | {{ "%.5f"|format(summary.radius_target_m) }} |
+| Target angular speed \(\omega\) (rad/s) | {{ "%.4f"|format(summary.omega_target_rad_s) }} |
+| Spring stiffness \(k\) (N/m) | {{ "%.2f"|format(summary.spring_k_N_m) }} |
+| Mean actual radius (m) | {{ "%.5f"|format(summary.mean_radius_m) }} |
+| Mean tangential speed (m/s) | {{ "%.5f"|format(summary.mean_speed_m_s) }} |
+| Mean spring extension (m) | {{ "%.6f"|format(summary.mean_extension_m) }} |
+| Measured spring force (N) | {{ "%.5f"|format(summary.mean_force_N) }} |
+| Reference \(m\omega^2r\) force (N) | {{ "%.5f"|format(summary.mean_theory_force_N) }} |
+| Kinematic \(mv^2/r\) force (N) | {{ "%.5f"|format(summary.mean_kinematic_force_N) }} |
+| Error vs reference (%) | {{ "%.3f"|format(summary.force_error_pct) }} |
+
+## 5  Figures
+
+![Raw time series](./{{ plot_files.timeseries }})
+
+**Figure 1:** Radius, tangential speed, and force versus time.
+
+![Force comparison](./{{ plot_files.force_compare }})
+
+**Figure 2:** Measured spring force, kinematic force from PhysX \(v,r\),
+and analytical reference.
+
+![Orbit](./{{ plot_files.orbit }})
+
+**Figure 3:** Top-view orbit of the bob.
+
+![Percent error](./{{ plot_files.error }})
+
+**Figure 4:** Percent error of the spring-force measurement relative to
+the analytical reference.
+
+## 6  Data and Error Analysis
+
+The steady-state measured spring force was
+{{ "%.5f"|format(summary.mean_force_N) }} N, while the analytical
+reference was {{ "%.5f"|format(summary.mean_theory_force_N) }} N.  The
+percent difference was {{ "%.3f"|format(summary.force_error_pct) }}%.
+The force computed from PhysX-measured speed and radius was
+{{ "%.5f"|format(summary.mean_kinematic_force_N) }} N.
+
+The uncertainty estimates used for the simulated sensors were
+\(\delta m = {{ "%.5f"|format(summary.mass_unc_kg) }}\) kg,
+\(\delta r = {{ "%.4f"|format(summary.radius_unc_m) }}\) m, and
+\(\delta v = {{ "%.4f"|format(summary.speed_unc_m_s) }}\) m/s.  Propagating
+these through \(F = mv^2/r\) gives an estimated force uncertainty of
+{{ "%.5f"|format(summary.propagated_force_unc_N) }} N.
+
+The main deviation occurs during the speed ramp, where the bob is not yet
+in uniform circular motion.  During steady state, the spring-force
+measurement and the kinematic calculation agree much more closely.
+
+## 7  Conclusion
+
+The result supports the centripetal-force model.  Once the transient
+motion decayed, the measured inward spring force agreed with the force
+required for circular motion.
+
+1. With radius and speed approximately constant, centripetal force is
+   directly proportional to mass.
+2. With mass and radius constant, centripetal force is proportional to
+   \(v^2\), so a force-versus-speed-squared graph should be linear.
+3. With mass and angular velocity constant, \(F_c=m\omega^2r\) predicts
+   that force increases with radius.  With tangential speed held constant,
+   \(F_c=mv^2/r\) predicts that force decreases with radius.
+4. Equation \(F_c=mv^2/r\) is valid.  The radius result depends on
+   whether tangential speed or angular velocity is controlled.
+5. Friction between the mass and the rotating arm would add an extra
+   non-ideal force, reducing speed and contaminating the force sensor
+   reading.
+
+## 8  Appendix
+
+Exported files:
+
+- `Lab_Report_Centripetal_Force.pdf`
+- `Expt6_Centripetal_Force_Report.md`
+- `exp6_raw_timeseries.csv`
+- Python-generated PNG figures
+- ZIP package containing all generated files

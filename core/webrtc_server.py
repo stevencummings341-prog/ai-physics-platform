@@ -57,7 +57,7 @@ from configs.server import (
     EXP2_DEFAULT_DAMPING, EXP2_DEFAULT_AMPLITUDE,
     EXP2_PIVOT_POS, EXP2_ROD_DRAW_WIDTH, EXP2_ROD_DRAW_DEPTH,
     EXP2_BOB_DRAW_SIZE, EXP2_PIVOT_DRAW_SIZE, EXP2_FLOOR_Z,
-    REPLICATOR_INIT_MAX_RETRIES, CAMERA_SCRIPT_DIR,
+    REPLICATOR_INIT_MAX_RETRIES,
     EXP3_PIVOT_PATH, EXP3_PENDULUM_PATH, EXP3_BALL_PATH, EXP3_LAUNCHER_PATH,
     EXP3_MATERIAL_BALL_PATH, EXP3_MATERIAL_CATCHER_PATH, EXP3_JOINT_PATH,
     EXP3_DEFAULT_BALL_MASS, EXP3_DEFAULT_PEND_MASS,
@@ -80,6 +80,18 @@ from configs.server import (
     EXP5_DEFAULT_M, EXP5_DEFAULT_L, EXP5_DEFAULT_X, EXP5_DEFAULT_THETA0_DEG,
     EXP5_BAR_THICKNESS, EXP5_PIVOT_HEIGHT, EXP5_GROUND_Z,
     EXP5_SOLVER_POS_ITERS, EXP5_SOLVER_VEL_ITERS,
+    EXP6_ROOT_PATH, EXP6_ANCHOR_PATH, EXP6_ROTOR_PATH, EXP6_VISUAL_FRAME_PATH,
+    EXP6_BOB_PATH,
+    EXP6_TABLE_PATH, EXP6_SHAFT_VISUAL_PATH, EXP6_ARM_VISUAL_PATH,
+    EXP6_COUNTER_VISUAL_PATH, EXP6_SPRING_VISUAL_PATH, EXP6_HUB_VISUAL_PATH,
+    EXP6_PRISM_JOINT_PATH, EXP6_TABLE_MATERIAL_PATH, EXP6_BOB_MATERIAL_PATH,
+    EXP6_DEFAULT_MASS, EXP6_DEFAULT_RADIUS, EXP6_DEFAULT_OMEGA,
+    EXP6_DEFAULT_SPRING_K, EXP6_DEFAULT_DAMPER, EXP6_DEFAULT_RAMP_TIME,
+    EXP6_TABLE_Z, EXP6_GROUND_Z, EXP6_TABLE_RADIUS, EXP6_TABLE_THICKNESS,
+    EXP6_BOB_SIZE, EXP6_ARM_THICKNESS, EXP6_SHAFT_RADIUS, EXP6_PIVOT_HEIGHT,
+    EXP6_PRISM_LIMIT_MIN, EXP6_PRISM_LIMIT_MAX,
+    EXP6_ROTOR_UPDATE_HZ, EXP6_SOLVER_POS_ITERS, EXP6_SOLVER_VEL_ITERS,
+    EXP6_WARMUP_SECONDS,
     EXP7_CART1_PATH, EXP7_CART2_PATH, EXP7_GROUND_PATH, EXP7_MATERIAL_PATH,
     EXP7_DEFAULT_MASS1, EXP7_DEFAULT_MASS2,
     EXP7_DEFAULT_V1, EXP7_DEFAULT_V2, EXP7_DEFAULT_RESTITUTION,
@@ -152,6 +164,15 @@ class IsaacSimVideoTrack(VideoStreamTrack):
         self._replicator_initialized = False
         self._init_retry_count = 0
         self._max_init_retries = 5
+        # Cool-down so we don't spam Replicator init at 30 Hz when it keeps failing.
+        self._next_init_attempt = 0.0
+        self._init_cooldown_s = 2.0
+        # Stable-frame cache so a transient capture failure doesn't insert a
+        # green flash into the live video stream.
+        self._last_good_frame: Optional[np.ndarray] = None
+        self._consecutive_failures = 0
+        # Throttled error logging to avoid log floods.
+        self._last_capture_log_time = 0.0
 
     # --- Replicator init ---------------------------------------------------
     async def _init_replicator_async(self):
@@ -202,17 +223,44 @@ class IsaacSimVideoTrack(VideoStreamTrack):
         self.last_frame_time = time.time()
         self.frame_count += 1
 
-        arr = await self._capture()
+        # Defensive timeout: a single capture call must never hang the track,
+        # otherwise the WebRTC pipeline starves and the browser sees freezes.
+        arr = None
+        try:
+            arr = await asyncio.wait_for(self._capture(), timeout=0.25)
+        except asyncio.TimeoutError:
+            now = time.time()
+            if now - self._last_capture_log_time > 5.0:
+                carb.log_warn("[webrtc] frame capture timed out (>250ms) — using last good frame")
+                self._last_capture_log_time = now
+        except Exception as exc:
+            now = time.time()
+            if now - self._last_capture_log_time > 5.0:
+                carb.log_warn(f"[webrtc] frame capture error: {exc}")
+                self._last_capture_log_time = now
+            arr = None
+
         if arr is None or arr.size == 0:
-            arr = self._blank()
+            self._consecutive_failures += 1
+            # Reuse last good frame to avoid green flashes; only after a long
+            # stretch of failures do we surface a blank "we're alive" frame.
+            if self._last_good_frame is not None and self._consecutive_failures < 60:
+                arr = self._last_good_frame
+            else:
+                arr = self._blank()
         else:
-            if arr.shape[0] != self.height or arr.shape[1] != self.width:
-                from PIL import Image
-                img = Image.fromarray(arr[:, :, :3] if arr.shape[2] == 4 else arr)
-                img = img.resize((self.width, self.height), Image.LANCZOS)
-                arr = np.array(img)
-            if not (arr.dtype == np.uint8 and arr.flags["C_CONTIGUOUS"]):
-                arr = self._fix(arr)
+            self._consecutive_failures = 0
+            try:
+                if arr.shape[0] != self.height or arr.shape[1] != self.width:
+                    from PIL import Image
+                    img = Image.fromarray(arr[:, :, :3] if arr.shape[2] == 4 else arr)
+                    img = img.resize((self.width, self.height), Image.LANCZOS)
+                    arr = np.array(img)
+                if not (arr.dtype == np.uint8 and arr.flags["C_CONTIGUOUS"]):
+                    arr = self._fix(arr)
+                self._last_good_frame = arr
+            except Exception:
+                arr = self._last_good_frame if self._last_good_frame is not None else self._blank()
         try:
             frame = VideoFrame.from_ndarray(arr, format="rgb24")
             frame.pts = self.frame_count
@@ -252,11 +300,18 @@ class IsaacSimVideoTrack(VideoStreamTrack):
         try:
             import omni.replicator.core as rep_mod
             if not self._replicator_initialized or self.rgb_annotator is None:
+                # Throttle init attempts so a stuck Replicator doesn't fire 30 times/s.
+                now = time.time()
+                if now < self._next_init_attempt:
+                    return None
+                self._next_init_attempt = now + self._init_cooldown_s
                 self._init_retry_count += 1
                 ok = await self._init_replicator_async()
                 if not ok:
                     if self._init_retry_count >= self._max_init_retries:
                         self._init_retry_count = 0
+                        # Back off harder once the limit is hit.
+                        self._next_init_attempt = now + 10.0
                     return None
             try:
                 await rep_mod.orchestrator.step_async()
@@ -499,6 +554,9 @@ class WebRTCServer:
 
         self.simulation_control_enabled = False
         self._monitor_task: Optional[asyncio.Task] = None
+        self._dead_client_sweeper_task: Optional[asyncio.Task] = None
+        # Rate limiter for telemetry-loop error logs (avoids log floods).
+        self._last_telemetry_log_time = 0.0
 
         # Experiment 1 — angular momentum
         self.exp1_disk_mass = EXP1_DEFAULT_DISK_MASS
@@ -599,11 +657,41 @@ class WebRTCServer:
         self.exp5_period_samples: list = []
         self.exp5_pos_zero_crossings: list = []
         self.exp5_prev_theta_sign = 1
+        self.exp5_report_task: Optional[asyncio.Task] = None
+        self.exp5_samples: list[dict] = []                 # last run telemetry for report export
 
-        # Experiment 6 — centripetal force
-        self.exp6_mass = 0.5
-        self.exp6_radius = 0.3
-        self.exp6_angular_velocity = 5.0
+        # Experiment 6 — centripetal force (PhysX prismatic-spring model)
+        #
+        # A kinematic rotor is spun at ω.  A dynamic bob is attached to the
+        # rotor by a prismatic joint with a linear drive (stiffness = k,
+        # damping = c, target = r_target).  PhysX integrates the bob's
+        # motion → spring stretches → the spring force equals the
+        # centripetal force required for circular motion at r_actual.
+        self.exp6_mass = EXP6_DEFAULT_MASS
+        self.exp6_radius = EXP6_DEFAULT_RADIUS            # target rest length
+        self.exp6_omega = EXP6_DEFAULT_OMEGA              # target angular velocity (rad/s)
+        self.exp6_spring_k = EXP6_DEFAULT_SPRING_K        # spring stiffness (N/m)
+        self.exp6_damper = EXP6_DEFAULT_DAMPER            # spring damping (N·s/m)
+        self.exp6_ramp_time = EXP6_DEFAULT_RAMP_TIME      # s (ramp-up duration)
+        self.exp6_phase = "idle"                          # idle → running → stopped
+        self.exp6_scene_built = False
+        self.exp6_rotor_rotate_op = None                  # cached RotateZOp on the kinematic rotor body
+        self.exp6_visual_rotate_op = None                 # cached RotateZOp on the visual frame (sibling Xform)
+        self.exp6_drive_target_attr = None                # cached target pos attr (N·m)
+        self.exp6_sim_start_time = 0.0
+        self.exp6_rotor_angle = 0.0                       # rad (rotor orientation)
+        self.exp6_rotor_omega = 0.0                       # rad/s (live applied ω)
+        self.exp6_bob_x = 0.0                             # m world-space bob position
+        self.exp6_bob_y = 0.0
+        self.exp6_radius_actual = 0.0                     # m  √(x²+y²)
+        self.exp6_bob_speed = 0.0                         # m/s |v|
+        self.exp6_spring_force = 0.0                      # N   measured
+        self.exp6_rotor_task: Optional[asyncio.Task] = None
+        self.exp6_report_task: Optional[asyncio.Task] = None
+        self.exp6_samples: list[dict] = []                 # last run telemetry for report export
+        # Legacy aliases — old messages may still send "set_angular_velocity"
+        # which used to refer to Exp6.  Routed in _handle_ws_message.
+        self.exp6_angular_velocity = self.exp6_omega
 
         # Experiment 7 — momentum conservation (two-cart collision)
         self.exp7_mass1 = EXP7_DEFAULT_MASS1
@@ -645,6 +733,14 @@ class WebRTCServer:
         self._exp8_last_peak = 0.0
         self._exp8_resonance_ratio = 0.0
         self._exp8_nearest_mode = 1
+        # Cached USD TranslateOps so the wave-loop does not have to mutate
+        # xformOpOrder every frame (which causes viewport stalls + races with
+        # PhysX kinematic-target reads).  Populated by _setup_exp8_scene().
+        self._exp8_slice_ops: Dict[int, "UsdGeom.XformOp"] = {}
+        self._exp8_diaphragm_op: Optional["UsdGeom.XformOp"] = None
+        self._exp8_piston_op: Optional["UsdGeom.XformOp"] = None
+        self._exp8_handle_op: Optional["UsdGeom.XformOp"] = None
+        self._exp8_grip_op: Optional["UsdGeom.XformOp"] = None
 
         # Generic per-experiment parameter store for telemetry
         self._exp_params: Dict[str, Dict[str, float]] = {}
@@ -677,18 +773,31 @@ class WebRTCServer:
     async def offer(self, request):
         params = await request.json()
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-        pc = RTCPeerConnection(
-            configuration=RTCConfiguration(
-                iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
-            )
-        )
+        # Multiple STUN servers — falls through automatically if any are blocked.
+        # Google + Cloudflare + Twilio public servers, geographically diverse.
+        ice_servers = [
+            RTCIceServer(urls="stun:stun.l.google.com:19302"),
+            RTCIceServer(urls="stun:stun1.l.google.com:19302"),
+            RTCIceServer(urls="stun:stun.cloudflare.com:3478"),
+            RTCIceServer(urls="stun:global.stun.twilio.com:3478"),
+        ]
+        pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
         self.pcs.add(pc)
 
         @pc.on("connectionstatechange")
         async def _on_state():
-            if pc.connectionState in ("failed", "closed"):
+            state = pc.connectionState
+            carb.log_info(f"[webrtc] peer state -> {state} (peers={len(self.pcs)})")
+            if state in ("failed", "closed", "disconnected"):
                 self.pcs.discard(pc)
-                await pc.close()
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+
+        @pc.on("iceconnectionstatechange")
+        async def _on_ice_state():
+            carb.log_info(f"[webrtc] ICE state -> {pc.iceConnectionState}")
 
         if self.video_track is None:
             self.video_track = IsaacSimVideoTrack()
@@ -735,17 +844,21 @@ class WebRTCServer:
     async def load_usd(self, request):
         p = await request.json()
         experiment_id = str(p.get("experiment_id", "")).strip()
-        if experiment_id == "7":
-            await self._setup_exp7_scene()
-            return web.Response(text=json.dumps({"status": "ok"}))
-        if experiment_id == "2":
-            await self._setup_exp2_scene()
-            return web.Response(text=json.dumps({"status": "ok"}))
-        if experiment_id == "3":
-            await self._setup_exp3_scene()
-            return web.Response(text=json.dumps({"status": "ok"}))
-        if experiment_id == "4":
-            await self._setup_exp4_scene()
+        # Experiments with a procedural PhysX scene: build it on the fly
+        # instead of falling through to DEFAULT_USD_PATH (which would
+        # replace the scene with the pre-baked unified exp.usd).
+        procedural_builders = {
+            "2": self._setup_exp2_scene,
+            "3": self._setup_exp3_scene,
+            "4": self._setup_exp4_scene,
+            "5": self._setup_exp5_scene,
+            "6": self._setup_exp6_scene,
+            "7": self._setup_exp7_scene,
+            "8": self._setup_exp8_scene,
+        }
+        if experiment_id in procedural_builders:
+            self.current_experiment = experiment_id
+            await procedural_builders[experiment_id]()
             return web.Response(text=json.dumps({"status": "ok"}))
         usd_path = p.get("usd_path")
         if not usd_path:
@@ -765,17 +878,70 @@ class WebRTCServer:
     # --- WebSocket handler --------------------------------------------------
 
     async def websocket_handler(self, request):
-        ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
+        # heartbeat=20s + autoping=True keeps NAT/proxy mappings alive and
+        # detects half-open TCP within ~40s instead of waiting for OS keepalive.
+        # max_msg_size=16MB tolerates bulky base64 PDF/ZIP report payloads.
+        ws = web.WebSocketResponse(
+            max_msg_size=16 * 1024 * 1024,
+            heartbeat=20.0,
+            autoping=True,
+            receive_timeout=None,
+        )
         await ws.prepare(request)
         self.ws_clients.add(ws)
-        await ws.send_json({"type": "connected", "message": "WebSocket connected to Isaac Sim"})
+        peer = request.remote or "?"
+        carb.log_info(f"[ws] client connected from {peer} (clients={len(self.ws_clients)})")
+        try:
+            await ws.send_json({"type": "connected", "message": "WebSocket connected to Isaac Sim"})
+        except Exception:
+            pass
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    await self._handle_ws_message(ws, data)
+                    try:
+                        data = json.loads(msg.data)
+                    except Exception as exc:
+                        carb.log_warn(f"[ws] bad JSON from {peer}: {exc}")
+                        continue
+                    # Lightweight client-driven heartbeat support.
+                    if isinstance(data, dict) and data.get("type") == "ping":
+                        try:
+                            await ws.send_json({"type": "pong", "ts": data.get("ts", time.time())})
+                        except Exception:
+                            break
+                        continue
+                    # Each command runs inside its own guard so a single bad
+                    # message never tears down the connection.
+                    try:
+                        await self._handle_ws_message(ws, data)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        carb.log_error(
+                            f"[ws] handler error for type={data.get('type') if isinstance(data, dict) else '?'}: {exc}"
+                        )
+                        try:
+                            await ws.send_json({
+                                "type": "error",
+                                "message": f"server error handling '{data.get('type')}': {exc}",
+                            })
+                        except Exception:
+                            break
+                elif msg.type == web.WSMsgType.ERROR:
+                    carb.log_warn(f"[ws] connection error from {peer}: {ws.exception()}")
+                    break
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        except Exception as exc:
+            carb.log_warn(f"[ws] loop ended unexpectedly: {exc}")
         finally:
             self.ws_clients.discard(ws)
+            try:
+                if not ws.closed:
+                    await ws.close()
+            except Exception:
+                pass
+            carb.log_info(f"[ws] client disconnected (clients={len(self.ws_clients)})")
         return ws
 
     async def _handle_ws_message(self, ws, data: dict):
@@ -791,6 +957,8 @@ class WebRTCServer:
                 await self._start_exp4_sim()
             elif self.current_experiment == "5":
                 await self._start_exp5_sim()
+            elif self.current_experiment == "6":
+                await self._start_exp6_sim()
             elif self.current_experiment == "3":
                 await self._fire_exp3_ball()
             elif self.current_experiment == "8":
@@ -813,6 +981,11 @@ class WebRTCServer:
                     self.exp4_drive_task = None
             elif self.current_experiment == "5":
                 self.exp5_phase = "stopped"
+            elif self.current_experiment == "6":
+                self.exp6_phase = "stopped"
+                if self.exp6_rotor_task and not self.exp6_rotor_task.done():
+                    self.exp6_rotor_task.cancel()
+                    self.exp6_rotor_task = None
             elif self.current_experiment == "3":
                 self.exp3_phase = "settled"
             elif self.current_experiment == "8":
@@ -841,6 +1014,8 @@ class WebRTCServer:
                 await self._reset_exp4()
             elif self.current_experiment == "5":
                 await self._reset_exp5()
+            elif self.current_experiment == "6":
+                await self._reset_exp6()
             elif self.current_experiment == "7":
                 await self._reset_exp7()
             elif self.current_experiment == "8":
@@ -850,6 +1025,13 @@ class WebRTCServer:
             tl.stop()
             await asyncio.sleep(0.1)
             tl.stop()
+
+        elif mtype == "exp3_soft_reset":
+            # Lightweight reset for the Exp3 multi-trial state machine —
+            # invoked by the "Next Trial" button.  Avoids the global
+            # tl.stop() x4 chain that disconnects the WebRTC stream.
+            if self.current_experiment == "3":
+                await self._soft_reset_exp3()
 
         elif mtype == "set_drop_object":
             self.exp1_drop_object = str(data.get("value", "ring"))
@@ -877,18 +1059,26 @@ class WebRTCServer:
 
         elif mtype == "load_usd":
             exp_id = str(data.get("experiment_id", "1")).strip()
-            if exp_id == "7":
-                await self._setup_exp7_scene()
-                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
-            elif exp_id == "2":
-                await self._setup_exp2_scene()
-                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
-            elif exp_id == "3":
-                await self._setup_exp3_scene()
-                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
-            elif exp_id == "4":
-                await self._setup_exp4_scene()
-                await ws.send_json({"type": "usd_loaded", "success": True, "path": "procedural"})
+            # Experiments built procedurally must NOT fall through to
+            # open_stage(DEFAULT_USD_PATH) — that would overwrite the
+            # experiment-specific PhysX scene with the unified exp.usd
+            # (whose angular-momentum rig dominates the view).  Dispatch
+            # to the setup coroutine directly.
+            procedural_builders = {
+                "2": self._setup_exp2_scene,
+                "3": self._setup_exp3_scene,
+                "4": self._setup_exp4_scene,
+                "5": self._setup_exp5_scene,
+                "6": self._setup_exp6_scene,
+                "7": self._setup_exp7_scene,
+                "8": self._setup_exp8_scene,
+            }
+            if exp_id in procedural_builders:
+                self.current_experiment = exp_id
+                await procedural_builders[exp_id]()
+                await ws.send_json({
+                    "type": "usd_loaded", "success": True, "path": "procedural",
+                })
             else:
                 usd_path = data.get("usd_path")
                 if not usd_path:
@@ -916,6 +1106,8 @@ class WebRTCServer:
                 await self._setup_exp4_scene()
             elif exp_id == "5":
                 await self._setup_exp5_scene()
+            elif exp_id == "6":
+                await self._setup_exp6_scene()
             elif exp_id == "7":
                 await self._setup_exp7_scene()
             elif exp_id == "8":
@@ -932,6 +1124,8 @@ class WebRTCServer:
                 asyncio.ensure_future(self._deferred_exp4_camera())
             elif exp_id == "5":
                 asyncio.ensure_future(self._deferred_exp5_camera())
+            elif exp_id == "6":
+                asyncio.ensure_future(self._deferred_exp6_camera())
             elif exp_id == "8":
                 asyncio.ensure_future(self._deferred_exp8_camera())
             if self.vr_bridge.enabled:
@@ -982,10 +1176,15 @@ class WebRTCServer:
         elif mtype == "set_exp3_v0":
             self.exp3_v0 = float(data.get("value", EXP3_DEFAULT_V0))
         elif mtype == "set_exp3_L":
-            # Pivot-to-CM distance — changing L requires a scene rebuild
-            self.exp3_L = max(0.10, float(data.get("value", EXP3_DEFAULT_L)))
-            if self.exp3_scene_built:
-                await self._setup_exp3_scene()
+            # Pivot-to-CM distance — changing L requires a real scene
+            # rebuild (joint anchor + rod length depend on it).  Pass
+            # force=True so the idempotency guard in _setup_exp3_scene
+            # is bypassed.
+            new_L = max(0.10, float(data.get("value", EXP3_DEFAULT_L)))
+            changed = abs(new_L - float(self.exp3_L)) > 1e-6
+            self.exp3_L = new_L
+            if changed and self.exp3_scene_built:
+                await self._setup_exp3_scene(force=True)
 
         # Experiment 4 — driven damped torsional oscillator (PhysX-native)
         elif mtype in ("set_exp4_frequency", "set_frequency"):
@@ -1011,6 +1210,8 @@ class WebRTCServer:
             self.exp4_drive_amp = max(0.0, float(data.get("value", EXP4_DEFAULT_DRIVE_AMP)))
         elif mtype == "exp4_free_oscillation":
             await self._start_exp4_free_oscillation()
+        elif mtype == "run_exp4_full_experiment":
+            asyncio.ensure_future(self._run_exp4_full_experiment(ws))
 
         # Experiment 5 — physical pendulum (rotational inertia)
         elif mtype == "set_exp5_m":
@@ -1030,12 +1231,51 @@ class WebRTCServer:
                 await self._setup_exp5_scene()
         elif mtype == "set_exp5_theta0":
             self.exp5_theta0_deg = float(data.get("value", EXP5_DEFAULT_THETA0_DEG))
+        elif mtype in ("export_exp5_report", "run_exp5_report"):
+            if self.exp5_report_task and not self.exp5_report_task.done():
+                await ws.send_json({"type": "exp5_report_progress", "data": {
+                    "phase": "Report generation already running", "current": 1, "total": 1,
+                }})
+            else:
+                await ws.send_json({"type": "exp5_report_progress", "data": {
+                    "phase": "Export request received", "current": 0, "total": 5,
+                }})
+                self.exp5_report_task = asyncio.ensure_future(
+                    self._generate_exp5_report(ws)
+                )
 
-        # Experiment 6 — centripetal force
-        elif mtype == "set_radius":
-            self.exp6_radius = float(data.get("value", 0.3))
-        elif mtype == "set_angular_velocity":
-            self.exp6_angular_velocity = float(data.get("value", 5.0))
+        # Experiment 6 — centripetal force (PhysX-native)
+        elif mtype == "set_exp6_mass":
+            self.exp6_mass = max(1e-4, float(data.get("value", EXP6_DEFAULT_MASS)))
+            if self.exp6_scene_built:
+                await self._apply_mass_at(EXP6_BOB_PATH, self.exp6_mass)
+        elif mtype in ("set_exp6_radius", "set_radius"):
+            r = max(0.01, float(data.get("value", EXP6_DEFAULT_RADIUS)))
+            self.exp6_radius = r
+            if self.exp6_scene_built:
+                self._apply_exp6_spring_params()
+        elif mtype in ("set_exp6_omega", "set_exp6_angular_velocity", "set_angular_velocity"):
+            val = float(data.get("value", EXP6_DEFAULT_OMEGA))
+            # `set_angular_velocity` is legacy/exp6-only (exp1 uses set_initial_velocity)
+            self.exp6_omega = max(0.0, val)
+            self.exp6_angular_velocity = self.exp6_omega
+        elif mtype == "set_exp6_spring_k":
+            self.exp6_spring_k = max(1.0, float(data.get("value", EXP6_DEFAULT_SPRING_K)))
+            if self.exp6_scene_built:
+                self._apply_exp6_spring_params()
+        elif mtype == "set_exp6_damper":
+            self.exp6_damper = max(0.0, float(data.get("value", EXP6_DEFAULT_DAMPER)))
+            if self.exp6_scene_built:
+                self._apply_exp6_spring_params()
+        elif mtype in ("export_exp6_report", "run_exp6_report"):
+            if self.exp6_report_task and not self.exp6_report_task.done():
+                await ws.send_json({"type": "exp6_report_progress", "data": {
+                    "phase": "Report generation already running", "current": 1, "total": 1,
+                }})
+            else:
+                self.exp6_report_task = asyncio.ensure_future(
+                    self._generate_exp6_report(ws)
+                )
 
         # Experiment 7 — momentum conservation
         elif mtype == "set_mass1":
@@ -1080,6 +1320,8 @@ class WebRTCServer:
             if self.current_experiment == "8" and self.exp8_scene_built:
                 await self._exp8_apply_piston_position()
                 self._exp8_reset_fields()
+        elif mtype == "run_exp8_full_experiment":
+            asyncio.ensure_future(self._run_exp8_full_experiment(ws))
 
         # VR hand tracking commands
         elif mtype == "vr_enable":
@@ -1188,7 +1430,8 @@ class WebRTCServer:
         Uses the same approach as exp7 (direct UsdGeom — no World object)
         which is proven to work with the WebRTC frame-capture pipeline.
         All visual parameters (sizes, colours, positions, DomeLight) are
-        identical to expt2_large_amplitude_pendulum_sim_fixed.py.
+        identical to the original PASCO ME-9889 visual layout (now in
+        core/exp2_analysis.py and experiments/expt2_large_pendulum/sim.py).
         """
         try:
             ctx = omni.usd.get_context()
@@ -1454,10 +1697,76 @@ class WebRTCServer:
                 with open(fpath, "rb") as f:
                     return base64.b64encode(f.read()).decode("ascii")
 
+            def _finite_or_none(value):
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    return None
+                return value if np.isfinite(value) else None
+
+            valid_summary = summary_df.dropna(subset=["amp_measured", "period_measured"])
+            if len(valid_summary) > 0:
+                small_angle_error = (
+                    (valid_summary["period_measured"] - valid_summary["T0_theory"])
+                    / valid_summary["T0_theory"] * 100.0
+                )
+                max_error = _finite_or_none(small_angle_error.max())
+                avg_error = _finite_or_none(small_angle_error.mean())
+            else:
+                max_error = None
+                avg_error = None
+
+            def _series_error(amplitude_rad: float) -> float:
+                return (period_series(T0, amplitude_rad, 5) - T0) / T0 * 100.0
+
+            period_rows = []
+            for row in summary_df.to_dict(orient="records"):
+                period_rows.append({
+                    "amp_set": _finite_or_none(row.get("amp_set")),
+                    "amp_measured": _finite_or_none(row.get("amp_measured")),
+                    "period_measured": _finite_or_none(row.get("period_measured")),
+                    "T0_theory": _finite_or_none(row.get("T0_theory")),
+                    "T0_measured_from_period_zero": _finite_or_none(row.get("T0_measured_from_period_zero")),
+                    "T_series_2term": _finite_or_none(row.get("T_series_2term")),
+                    "T_series_3term": _finite_or_none(row.get("T_series_3term")),
+                    "T_series_4term": _finite_or_none(row.get("T_series_4term")),
+                    "T_series_5term": _finite_or_none(row.get("T_series_5term")),
+                })
+
             result_data = {
                 "T0_theory": round(T0, 6),
                 "T0_measured": round(float(T0_measured), 6),
+                "amp_mid": _finite_or_none(amp_mid),
                 "sweep_points": len(rows),
+                "params": {
+                    "rod_mass": EXP2_ROD_MASS,
+                    "rod_length": EXP2_ROD_LENGTH,
+                    "bob_mass_1": self.exp2_bob_mass1,
+                    "bob_mass_2": self.exp2_bob_mass2,
+                    "r1": self.exp2_r1,
+                    "r2": self.exp2_r2,
+                    "damping": damping,
+                    "dt": dt,
+                    "small_amp": small_amp,
+                    "large_amp": large_amp,
+                    "amp_start": amp_start,
+                    "amp_end": amp_end,
+                    "amp_step": amp_step,
+                    "g": 9.81,
+                },
+                "props": {
+                    "m_total": _finite_or_none(props.get("m_total")),
+                    "d": _finite_or_none(props.get("d")),
+                    "I": _finite_or_none(props.get("I")),
+                },
+                "metrics": {
+                    "max_small_angle_error_pct": max_error,
+                    "avg_small_angle_error_pct": avg_error,
+                    "error_at_20_deg_pct": _finite_or_none(_series_error(np.deg2rad(20.0))),
+                    "error_at_45_deg_pct": _finite_or_none(_series_error(np.deg2rad(45.0))),
+                    "period_ratio_90_deg": _finite_or_none(period_series(T0, np.deg2rad(90.0), 5) / T0),
+                },
+                "period_rows": period_rows,
                 "plots": {
                     "overlay": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "small_vs_large_theta.png")),
                     "period": "data:image/png;base64," + _read_b64(os.path.join(out_dir, "period_vs_amplitude.png")),
@@ -1485,8 +1794,22 @@ class WebRTCServer:
 
     # --- Experiment 3 — ballistic pendulum (PhysX compound body + joint) ---
 
-    async def _setup_exp3_scene(self):
+    async def _setup_exp3_scene(self, force: bool = False):
         """Build the ballistic-pendulum scene procedurally.
+
+        Idempotent: when called with ``force=False`` (the default) and the
+        scene is already built **and** the key prims still exist in the
+        active stage, this is a near-no-op (only re-aims the camera).
+        Without this guard, every redundant ``enter_experiment`` (e.g.
+        the auto-replay isaacService fires after a transient WS reconnect,
+        plus the second one ExperimentView fires from its
+        ``onStatusChange`` handler) would call ``ctx.new_stage()`` and
+        wipe out an in-flight simulation, leaving the timeline stopped
+        with a frozen viewport — which the user perceives as
+        "screen doesn't move / disconnect".
+
+        ``force=True`` is used by the L-slider handler, where joint
+        geometry must be rewritten and a real rebuild is required.
 
         Scene layout (world-frame, Z-up, gravity = −9.81 m/s²):
 
@@ -1515,7 +1838,42 @@ class WebRTCServer:
         so the collision is maximally inelastic (classical ballistic
         pendulum assumption).
         """
+        # ── Idempotency guard ──
+        # If the scene is still alive in the current stage, don't rebuild.
+        # This protects the in-flight simulation (and the WebRTC video
+        # pipeline) from being torn down by redundant `enter_experiment`
+        # calls (initial mount + isaacService auto-replay + status-change
+        # replay = up to 3 calls per session start).
+        if self.exp3_scene_built and not force:
+            try:
+                stage_check = omni.usd.get_context().get_stage()
+                if stage_check is not None:
+                    ball_check = stage_check.GetPrimAtPath(EXP3_BALL_PATH)
+                    pend_check = stage_check.GetPrimAtPath(EXP3_PENDULUM_PATH)
+                    if (ball_check and ball_check.IsValid()
+                            and pend_check and pend_check.IsValid()):
+                        # Scene intact — preserve simulation state, just
+                        # make sure the camera is aimed correctly.
+                        try:
+                            self._force_exp3_camera(stage_check)
+                        except Exception:
+                            pass
+                        carb.log_info(
+                            "exp3: scene already built — skipping rebuild"
+                        )
+                        return
+            except Exception:
+                pass
+            # Stage was replaced (user switched experiments and back, etc.)
+            # — fall through to a full rebuild.
+            self.exp3_scene_built = False
+
         try:
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            self.simulation_control_enabled = False
+            self.exp3_scene_built = False
+
             ctx = omni.usd.get_context()
             ctx.new_stage()
             app = omni.kit.app.get_app()
@@ -1903,18 +2261,34 @@ class WebRTCServer:
     # ---- exp3 dynamics & telemetry helpers ---------------------------------
 
     async def _fire_exp3_ball(self):
-        """Reset the ball to spawn pose, apply v0 toward +X, start PhysX."""
+        """Reset the ball to spawn pose, apply v0 toward +X, start PhysX.
+
+        Robustness: after ``tl.play()`` we **poll** for valid dynamic-control
+        handles (up to ~0.6 s) before injecting the muzzle velocity.  If we
+        skipped this, a slow PhysX init would leave ``get_rigid_body``
+        returning ``INVALID_HANDLE``, the velocity write would silently
+        no-op, and the ball would just sit at the muzzle (the
+        "screen doesn't move" symptom).  We also re-issue ``tl.play()``
+        if the timeline didn't actually transition to playing.
+        """
         try:
             if not self.exp3_scene_built:
-                await self._setup_exp3_scene()
+                await self._setup_exp3_scene(force=True)
 
             tl = omni.timeline.get_timeline_interface()
             tl.stop()
+            tl.set_current_time(0.0)
             await asyncio.sleep(0.05)
 
             stage = omni.usd.get_context().get_stage()
             if not stage:
-                return
+                # Defensive: try one rebuild before giving up.
+                carb.log_warn("exp3: stage missing in fire — forcing rebuild")
+                await self._setup_exp3_scene(force=True)
+                stage = omni.usd.get_context().get_stage()
+                if not stage:
+                    carb.log_error("exp3: stage still missing after rebuild — abort fire")
+                    return
 
             # Reset ball pose
             catcher_front_x = -EXP3_CATCHER_W / 2.0
@@ -1956,26 +2330,53 @@ class WebRTCServer:
 
             self.simulation_control_enabled = True
             tl.play()
+
+            # Make sure PhysX actually transitioned to "playing".  In rare
+            # cases (immediately after a stop/play storm), the first
+            # tl.play() doesn't latch — re-issue once after a tick.
             await asyncio.sleep(EXP3_WARMUP_SECONDS)
+            if not tl.is_playing():
+                carb.log_warn("exp3: tl.play() didn't latch — re-issuing")
+                tl.play()
+                await asyncio.sleep(0.05)
 
             # Apply v0 through dynamic_control — PhysX now owns the motion.
             from omni.isaac.dynamic_control import _dynamic_control
             if self._dc_interface is None:
                 self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
             dc = self._dc_interface
-            h = dc.get_rigid_body(EXP3_BALL_PATH)
-            if h != _dynamic_control.INVALID_HANDLE:
-                dc.set_rigid_body_linear_velocity(h, (float(self.exp3_v0), 0.0, 0.0))
-                dc.set_rigid_body_angular_velocity(h, (0.0, 0.0, 0.0))
-            # Pendulum starts at rest
-            ph = dc.get_rigid_body(EXP3_PENDULUM_PATH)
-            if ph != _dynamic_control.INVALID_HANDLE:
-                dc.set_rigid_body_linear_velocity(ph, (0.0, 0.0, 0.0))
-                dc.set_rigid_body_angular_velocity(ph, (0.0, 0.0, 0.0))
+
+            # Poll for valid handles.  Newly-rebuilt scenes need a few ticks
+            # before PhysX exposes valid rigid-body handles; without this
+            # loop the velocity write below silently no-ops on the very
+            # first Fire after a rebuild, leaving the ball stationary.
+            ball_h = _dynamic_control.INVALID_HANDLE
+            pend_h = _dynamic_control.INVALID_HANDLE
+            for _ in range(24):  # up to 24 * 25 ms = 0.6 s
+                ball_h = dc.get_rigid_body(EXP3_BALL_PATH)
+                pend_h = dc.get_rigid_body(EXP3_PENDULUM_PATH)
+                if (ball_h != _dynamic_control.INVALID_HANDLE
+                        and pend_h != _dynamic_control.INVALID_HANDLE):
+                    break
+                await asyncio.sleep(0.025)
+
+            if ball_h != _dynamic_control.INVALID_HANDLE:
+                dc.set_rigid_body_linear_velocity(ball_h, (float(self.exp3_v0), 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(ball_h, (0.0, 0.0, 0.0))
+            else:
+                carb.log_error(
+                    "exp3: ball rigid-body handle never became valid — "
+                    "Fire failed; the ball will not move.  Try Reset."
+                )
+
+            if pend_h != _dynamic_control.INVALID_HANDLE:
+                dc.set_rigid_body_linear_velocity(pend_h, (0.0, 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(pend_h, (0.0, 0.0, 0.0))
 
             carb.log_warn(
                 f"exp3: fired  v0={self.exp3_v0:.2f}  m_ball={self.exp3_ball_mass:.4f}  "
-                f"m_pend={self.exp3_pend_mass:.4f}  L={self.exp3_L:.3f}"
+                f"m_pend={self.exp3_pend_mass:.4f}  L={self.exp3_L:.3f}  "
+                f"playing={tl.is_playing()}"
             )
         except Exception as exc:
             carb.log_error(f"_fire_exp3_ball: {exc}")
@@ -1983,7 +2384,17 @@ class WebRTCServer:
             carb.log_error(traceback.format_exc())
 
     async def _reset_exp3(self):
-        """Return everything to idle (pre-fire) pose without rebuilding."""
+        """Lightweight state reset for exp3 — does NOT touch the timeline.
+
+        The next ``Fire`` (`_fire_exp3_ball`) already performs a full physics
+        reset (`tl.stop()` + pose snap + `tl.play()`).  Stopping the timeline
+        here as well caused four `tl.stop()` calls in rapid succession from
+        the global reset path, which briefly tears down Hydra and starves the
+        asyncio loop long enough for the WebRTC ICE keepalive to lapse →
+        the browser sees a video disconnect.  Keeping this method
+        state-only matches `_reset_exp4/5/6/7/8` and is safe to run while
+        PhysX is still simulating.
+        """
         self.exp3_phase = "idle"
         self.exp3_theta = 0.0
         self.exp3_omega = 0.0
@@ -1992,31 +2403,63 @@ class WebRTCServer:
         self.exp3_ball_velocity = 0.0
         self.exp3_collision_detected = False
         self.exp3_prev_omega_sign = 0
+
+    async def _soft_reset_exp3(self):
+        """Reset for ``Next Trial`` — state-only, no timeline stop, no scene rebuild.
+
+        Used by the front-end ``exp3_soft_reset`` command.  Keeps the
+        renderer running so the WebRTC track keeps delivering frames; the
+        upcoming ``Fire`` will perform its own (stop → reposition → play)
+        cycle for a clean physics state.
+
+        Best-effort visual snap-back: while PhysX is still simulating,
+        we use ``dc.set_rigid_body_pose`` + zero-velocity to send the
+        ball back to spawn and the pendulum back to vertical.  If the
+        call fails (e.g. handles invalid because PhysX is between
+        steps), we silently fall back to "do nothing" — the next Fire
+        will fully reset everything anyway.
+        """
+        self.exp3_phase = "idle"
+        self.exp3_theta = 0.0
+        self.exp3_omega = 0.0
+        self.exp3_theta_max = 0.0
+        self.exp3_v0_measured = 0.0
+        self.exp3_ball_velocity = 0.0
+        self.exp3_collision_detected = False
+        self.exp3_prev_omega_sign = 0
+
         try:
-            stage = omni.usd.get_context().get_stage()
-            if not stage:
-                return
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = _dynamic_control.acquire_dynamic_control_interface()
+            dc = self._dc_interface
+
             catcher_z = EXP3_PIVOT_HEIGHT - float(self.exp3_L)
-            # Pendulum to vertical
-            pend = stage.GetPrimAtPath(EXP3_PENDULUM_PATH)
-            if pend and pend.IsValid():
-                xf = UsdGeom.Xformable(pend)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, catcher_z))
-                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-                xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
-            # Ball back to spawn
-            ball = stage.GetPrimAtPath(EXP3_BALL_PATH)
-            if ball and ball.IsValid():
-                catcher_front_x = -EXP3_CATCHER_W / 2.0
-                ball_x = catcher_front_x - EXP3_BALL_SPAWN_OFFSET
-                xf = UsdGeom.Xformable(ball)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(ball_x, 0.0, catcher_z))
-                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-                xf.AddScaleOp().Set(Gf.Vec3f(EXP3_BALL_SIZE, EXP3_BALL_SIZE, EXP3_BALL_SIZE))
+            catcher_front_x = -EXP3_CATCHER_W / 2.0
+            ball_x = catcher_front_x - EXP3_BALL_SPAWN_OFFSET
+            # Isaac DC Transform expects ((x,y,z), (qx,qy,qz,qw))
+            ball_pose = ((ball_x, 0.0, catcher_z), (0.0, 0.0, 0.0, 1.0))
+            pend_pose = ((0.0, 0.0, catcher_z), (0.0, 0.0, 0.0, 1.0))
+
+            ball_h = dc.get_rigid_body(EXP3_BALL_PATH)
+            if ball_h != _dynamic_control.INVALID_HANDLE:
+                try:
+                    dc.set_rigid_body_pose(ball_h, ball_pose)
+                except Exception:
+                    pass
+                dc.set_rigid_body_linear_velocity(ball_h, (0.0, 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(ball_h, (0.0, 0.0, 0.0))
+
+            pend_h = dc.get_rigid_body(EXP3_PENDULUM_PATH)
+            if pend_h != _dynamic_control.INVALID_HANDLE:
+                try:
+                    dc.set_rigid_body_pose(pend_h, pend_pose)
+                except Exception:
+                    pass
+                dc.set_rigid_body_linear_velocity(pend_h, (0.0, 0.0, 0.0))
+                dc.set_rigid_body_angular_velocity(pend_h, (0.0, 0.0, 0.0))
         except Exception as exc:
-            carb.log_error(f"_reset_exp3: {exc}")
+            carb.log_warn(f"_soft_reset_exp3 best-effort failed: {exc}")
 
     def _read_exp3_pendulum_state(self):
         """Return (theta_rad, omega_rad_s) from the live pendulum pose."""
@@ -2417,6 +2860,7 @@ class WebRTCServer:
             self.exp5_prev_theta_sign = 1 if theta0 >= 0 else -1
             self.exp5_sim_start_time = time.time()
             self.exp5_phase = "running"
+            self.exp5_samples = []
 
             self.simulation_control_enabled = True
             tl.play()
@@ -2436,6 +2880,7 @@ class WebRTCServer:
         self.exp5_period_samples = []
         self.exp5_pos_zero_crossings = []
         self.exp5_prev_theta_sign = 1
+        self.exp5_samples = []
         try:
             stage = omni.usd.get_context().get_stage()
             if not stage:
@@ -2561,6 +3006,1208 @@ class WebRTCServer:
             if self.current_experiment != "5":
                 return
             self._force_exp5_camera()
+
+    # --- Experiment 6 — centripetal force (PhysX prismatic-spring model) ----
+    #
+    # A kinematic rotor carries a frame that rotates about +Z at the user's
+    # target ω.  Along the rotor's local +X axis a prismatic joint connects
+    # the rotor to a dynamic bob.  A UsdPhysics.DriveAPI on the joint
+    # (type="force", stiffness=k, damping=c, target=r_target) models the
+    # spring that pulls the bob back toward the axis.
+    #
+    # As PhysX integrates the bob's motion the spring stretches until its
+    # force balances the centripetal requirement of circular motion.  The
+    # measured spring force F_meas = k·(r_actual − r_target) is therefore
+    # the real centripetal force, produced by the physics simulation — not
+    # the formula F = m ω² r.
+    #
+    # USD PrismaticJoint DriveAPI uses SI (stiffness N/m, damping N·s/m,
+    # target in metres) — no degree/radian conversion needed (unlike the
+    # revolute joint in exp4).
+
+    _EXP6_ROTOR_HUB_R = 0.030       # visual hub half-extent (square puck)
+    _EXP6_ARM_OVERSHOOT = 0.04       # visual arm extends this far past r
+    _EXP6_SPRING_BASE_COLOR = (0.15, 0.85, 0.35)
+    _EXP6_BOB_COLOR = (0.95, 0.20, 0.20)
+
+    async def _setup_exp6_scene(self):
+        """Build the centripetal-force apparatus procedurally.
+
+        Scene graph:
+            /World/exp6/
+                PhysicsScene                (Earth gravity)
+                DomeLight
+                ground, grid                (visual only)
+                table                       (FixedCuboid, frictionless)
+                rotor/                      (kinematic Xform — body0)
+                    shaft, arm, counter_mass, hub, spring   (visuals only)
+                bob                         (dynamic rigid body — body1)
+                PrismaticJoint              (rotor ↔ bob, X-axis)
+                TableMaterial, BobMaterial  (frictionless)
+        """
+        try:
+            ctx = omni.usd.get_context()
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            stage = ctx.get_stage()
+            if not stage:
+                carb.log_error("exp6: no stage after new_stage()")
+                return
+
+            UsdGeom.Xform.Define(stage, "/World")
+            UsdGeom.Xform.Define(stage, EXP6_ROOT_PATH)
+
+            # Physics scene — Earth gravity (AGENTS rule); the table cancels
+            # it for the bob via the normal force.
+            ps = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+            ps.CreateGravityDirectionAttr().Set(Gf.Vec3f(0, 0, -1))
+            ps.CreateGravityMagnitudeAttr().Set(9.81)
+
+            UsdLux.DomeLight.Define(
+                stage, f"{EXP6_ROOT_PATH}/DomeLight",
+            ).CreateIntensityAttr(1400.0)
+
+            # Dark visual floor + grid, exactly like exp4/exp5
+            self._exp6_make_visual(
+                stage, f"{EXP6_ROOT_PATH}/ground",
+                pos=(0, 0, EXP6_GROUND_Z),
+                scale=(6.0, 6.0, 0.02),
+                color=(0.10, 0.10, 0.12),
+            )
+            for i, xv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp6_make_visual(
+                    stage, f"{EXP6_ROOT_PATH}/GridX_{i}",
+                    pos=(float(xv), 0, EXP6_GROUND_Z + 0.011),
+                    scale=(0.008, 4.0, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+            for i, yv in enumerate(np.arange(-2.0, 2.01, 0.5)):
+                self._exp6_make_visual(
+                    stage, f"{EXP6_ROOT_PATH}/GridY_{i}",
+                    pos=(0, float(yv), EXP6_GROUND_Z + 0.011),
+                    scale=(4.0, 0.008, 0.002),
+                    color=(0.78, 0.78, 0.80),
+                )
+
+            # Pedestal under the table (purely decorative)
+            self._exp6_make_visual(
+                stage, f"{EXP6_ROOT_PATH}/pedestal",
+                pos=(0, 0, (EXP6_GROUND_Z + EXP6_TABLE_Z) / 2.0),
+                scale=(0.18, 0.18, max(0.01, EXP6_TABLE_Z - EXP6_GROUND_Z - 0.02)),
+                color=(0.25, 0.25, 0.30),
+            )
+
+            # Horizontal frictionless table supporting the bob
+            self._exp6_make_table(
+                stage, EXP6_TABLE_PATH,
+                pos=(0, 0, EXP6_TABLE_Z),
+                scale=(2.0 * EXP6_TABLE_RADIUS, 2.0 * EXP6_TABLE_RADIUS,
+                       EXP6_TABLE_THICKNESS),
+                color=(0.70, 0.72, 0.78),
+            )
+
+            # Rotor — a MINIMAL kinematic rigid body with no visible geometry
+            # of its own.  Keeping the rigid body childless prevents PhysX
+            # from auto-inferring collision geometry from descendants (which
+            # some Isaac Sim builds do for UsdGeom.Gprim children of a
+            # RigidBodyAPI-bearing Xform).  All decorative arm/hub/spring
+            # cubes live on a separate sibling Xform (`visual_frame`) that
+            # is rotated in sync with the rotor by the pose-driver task.
+            rotor_base_z = EXP6_TABLE_Z + EXP6_TABLE_THICKNESS * 0.5 + EXP6_PIVOT_HEIGHT
+            self.exp6_rotor_rotate_op = self._exp6_make_rotor(
+                stage, EXP6_ROTOR_PATH,
+                pos=(0, 0, rotor_base_z),
+            )
+
+            # Visual frame — plain Xform that rotates in lockstep with the
+            # rotor but has no RigidBodyAPI and therefore cannot confuse
+            # PhysX.  Same translate as the rotor so the arm origin lines
+            # up perfectly with the physics joint anchor.
+            self.exp6_visual_rotate_op = self._exp6_make_visual_frame(
+                stage, EXP6_VISUAL_FRAME_PATH,
+                pos=(0, 0, rotor_base_z),
+            )
+
+            # Decorative cubes under the visual frame
+            r_target = float(self.exp6_radius)
+            arm_length = max(0.05, r_target + self._EXP6_ARM_OVERSHOOT)
+            # Central hub puck
+            self._exp6_make_visual(
+                stage, EXP6_HUB_VISUAL_PATH,
+                pos=(0, 0, 0.0),
+                scale=(2.0 * self._EXP6_ROTOR_HUB_R,
+                       2.0 * self._EXP6_ROTOR_HUB_R, 0.012),
+                color=(0.95, 0.80, 0.15),
+            )
+            # Vertical visual shaft below hub
+            self._exp6_make_visual(
+                stage, EXP6_SHAFT_VISUAL_PATH,
+                pos=(0, 0, -EXP6_PIVOT_HEIGHT * 0.5),
+                scale=(2.0 * EXP6_SHAFT_RADIUS, 2.0 * EXP6_SHAFT_RADIUS,
+                       EXP6_PIVOT_HEIGHT),
+                color=(0.35, 0.35, 0.40),
+            )
+            # Horizontal arm extending in visual-frame +X
+            self._exp6_make_visual(
+                stage, EXP6_ARM_VISUAL_PATH,
+                pos=(arm_length * 0.5, 0, 0.0),
+                scale=(arm_length, EXP6_ARM_THICKNESS, EXP6_ARM_THICKNESS),
+                color=(0.90, 0.90, 0.95),
+            )
+            # Counter-mass on the −X side for visual balance
+            self._exp6_make_visual(
+                stage, EXP6_COUNTER_VISUAL_PATH,
+                pos=(-r_target * 0.5, 0, 0.0),
+                scale=(EXP6_BOB_SIZE * 1.1, EXP6_BOB_SIZE * 1.1,
+                       EXP6_BOB_SIZE * 1.1),
+                color=(0.20, 0.45, 1.00),
+            )
+            # Spring indicator — a thin coloured rod along +X from hub to bob
+            # (its scale is updated each telemetry tick as the spring stretches)
+            self._exp6_make_visual(
+                stage, EXP6_SPRING_VISUAL_PATH,
+                pos=(r_target * 0.5, 0, 0.018),
+                scale=(max(0.01, r_target), 0.008, 0.008),
+                color=self._EXP6_SPRING_BASE_COLOR,
+            )
+
+            # Dynamic bob — positioned at world (r, 0, table_top + bob/2)
+            # so it rests on the table.  Locked Z-translation + X/Y rotation
+            # so gravity pushes it onto the table but does not induce
+            # spurious tipping when the spring yanks it.
+            bob_z = (EXP6_TABLE_Z + EXP6_TABLE_THICKNESS * 0.5
+                     + EXP6_BOB_SIZE * 0.5 + 0.001)
+            self._exp6_make_bob(
+                stage, EXP6_BOB_PATH,
+                pos=(r_target, 0.0, bob_z),
+                scale=(EXP6_BOB_SIZE, EXP6_BOB_SIZE, EXP6_BOB_SIZE),
+                mass=self.exp6_mass,
+                color=self._EXP6_BOB_COLOR,
+            )
+
+            # Frictionless physics materials
+            self._exp6_make_material(
+                stage, EXP6_TABLE_MATERIAL_PATH,
+                static_friction=0.0, dynamic_friction=0.0, restitution=0.0,
+            )
+            self._exp6_make_material(
+                stage, EXP6_BOB_MATERIAL_PATH,
+                static_friction=0.0, dynamic_friction=0.0, restitution=0.0,
+            )
+            self._exp6_bind_material(stage, EXP6_TABLE_PATH,
+                                     EXP6_TABLE_MATERIAL_PATH)
+            self._exp6_bind_material(stage, EXP6_BOB_PATH,
+                                     EXP6_BOB_MATERIAL_PATH)
+
+            # Prismatic joint rotor ↔ bob along rotor-local X
+            # The joint's "body0" frame is the rotor itself; the kinematic
+            # rotor's rotation about Z naturally rotates the joint axis,
+            # which is what produces the tangential coupling to the bob.
+            self._exp6_make_prismatic_joint(stage, r_target, bob_z - rotor_base_z)
+            self._apply_exp6_spring_params()
+
+            self.exp6_scene_built = True
+            self.exp6_phase = "idle"
+            self.exp6_rotor_angle = 0.0
+            self.exp6_rotor_omega = 0.0
+            self.exp6_bob_x = float(r_target)
+            self.exp6_bob_y = 0.0
+            self.exp6_radius_actual = float(r_target)
+            self.exp6_bob_speed = 0.0
+            self.exp6_spring_force = 0.0
+            self.exp6_samples = []
+
+            for _ in range(8):
+                await app.next_update_async()
+
+            self._force_exp6_camera(stage)
+            carb.log_warn(
+                f"exp6: scene built  m={self.exp6_mass:.4f} kg  "
+                f"r_target={self.exp6_radius:.3f} m  "
+                f"ω_target={self.exp6_omega:.3f} rad/s  "
+                f"k={self.exp6_spring_k:.1f} N/m"
+            )
+        except Exception as exc:
+            carb.log_error(f"_setup_exp6_scene: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+
+    @staticmethod
+    def _exp6_make_visual(stage, path, pos, scale, color):
+        """Decorative cube — no rigid body, no collision."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(float(pos[0]), float(pos[1]), float(pos[2])))
+        xf.AddScaleOp().Set(Gf.Vec3f(float(scale[0]), float(scale[1]), float(scale[2])))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+
+    @staticmethod
+    def _exp6_make_table(stage, path, pos, scale, color):
+        """Static horizontal table that supports the bob against gravity."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(prim)
+
+    @staticmethod
+    def _exp6_make_rotor(stage, path, pos):
+        """Kinematic rigid-body Xform that the bob's prismatic joint
+        attaches to.  NO visible geometry — arm/hub/spring etc. live on a
+        sibling `visual_frame` Xform.  Returns the cached RotateZ XformOp
+        so the rotor pose-driver task can spin it without re-looking-it-up.
+        """
+        xform = UsdGeom.Xform.Define(stage, path)
+        xf = UsdGeom.Xformable(xform.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        rotate_op = xf.AddRotateZOp()
+        rotate_op.Set(0.0)
+        xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+        prim = xform.GetPrim()
+        rb = UsdPhysics.RigidBodyAPI.Apply(prim)
+        rb.CreateKinematicEnabledAttr(True)
+        return rotate_op
+
+    @staticmethod
+    def _exp6_make_visual_frame(stage, path, pos):
+        """Plain Xform that carries the decorative arm/hub/spring cubes.
+
+        Rotates in lockstep with the kinematic rotor via a shared pose
+        driver, but has no physics schemas applied, so PhysX cannot
+        mistake its geometry for collision shapes.
+        """
+        xform = UsdGeom.Xform.Define(stage, path)
+        xf = UsdGeom.Xformable(xform.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        rotate_op = xf.AddRotateZOp()
+        rotate_op.Set(0.0)
+        xf.AddScaleOp().Set(Gf.Vec3f(1.0, 1.0, 1.0))
+        return rotate_op
+
+    @staticmethod
+    def _exp6_make_bob(stage, path, pos, scale, mass, color):
+        """Dynamic rigid body representing the orbiting mass."""
+        cube = UsdGeom.Cube.Define(stage, path)
+        cube.CreateSizeAttr(1.0)
+        xf = UsdGeom.Xformable(cube.GetPrim())
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(*pos))
+        xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        xf.AddScaleOp().Set(Gf.Vec3f(*scale))
+        cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        prim = cube.GetPrim()
+
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+        UsdPhysics.CollisionAPI.Apply(prim)
+        UsdPhysics.MassAPI.Apply(prim)
+        UsdPhysics.MassAPI(prim).CreateMassAttr().Set(float(mass))
+
+        rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        rb.CreateSolverPositionIterationCountAttr(EXP6_SOLVER_POS_ITERS)
+        rb.CreateSolverVelocityIterationCountAttr(EXP6_SOLVER_VEL_ITERS)
+        rb.CreateLinearDampingAttr(0.0)
+        rb.CreateAngularDampingAttr(0.0)
+        rb.CreateSleepThresholdAttr(0.0)
+        rb.CreateEnableCCDAttr(True)
+        # Lock Z translation (table supplies support) and X/Y rotations
+        # (no tipping).  Leave rotation about Z free so the bob can follow
+        # the arm tangentially.  USD lockedPosAxis is a bitmask: 1=X, 2=Y,
+        # 4=Z; lockedRotAxis: 1=RX, 2=RY, 4=RZ.
+        rb.CreateLockedPosAxisAttr().Set(4)
+        rb.CreateLockedRotAxisAttr().Set(3)
+
+        col = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+        col.CreateContactOffsetAttr(0.002)
+        col.CreateRestOffsetAttr(0.0)
+
+    @staticmethod
+    def _exp6_make_material(stage, path, static_friction, dynamic_friction,
+                            restitution):
+        mat_prim = stage.GetPrimAtPath(path)
+        if mat_prim and mat_prim.IsValid():
+            return
+        mat = UsdShade.Material.Define(stage, path)
+        UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
+        api = UsdPhysics.MaterialAPI(mat.GetPrim())
+        api.CreateStaticFrictionAttr().Set(float(static_friction))
+        api.CreateDynamicFrictionAttr().Set(float(dynamic_friction))
+        api.CreateRestitutionAttr().Set(float(restitution))
+        PhysxSchema.PhysxMaterialAPI.Apply(mat.GetPrim())
+
+    @staticmethod
+    def _exp6_bind_material(stage, target_path, material_path):
+        tgt = stage.GetPrimAtPath(target_path)
+        mat = stage.GetPrimAtPath(material_path)
+        if not (tgt and tgt.IsValid() and mat and mat.IsValid()):
+            return
+        if not tgt.HasAPI(UsdShade.MaterialBindingAPI):
+            UsdShade.MaterialBindingAPI.Apply(tgt)
+        UsdShade.MaterialBindingAPI(tgt).Bind(UsdShade.Material(mat))
+
+    @staticmethod
+    def _exp6_make_prismatic_joint(stage, r_target, bob_z_offset_local):
+        """Prismatic joint along rotor-local X, anchored at the bob's height.
+
+        body0 = rotor (kinematic, carries local frame that spins)
+        body1 = bob
+        axis   = X  (in the joint frame, which is the rotor frame because
+                     localRot0 = identity)
+        localPos0 = (0, 0, bob_z_offset_local)  — offset down to bob height
+        localPos1 = (0, 0, 0)                   — joint point at bob centre
+        """
+        jp = stage.GetPrimAtPath(EXP6_PRISM_JOINT_PATH)
+        if jp and jp.IsValid():
+            stage.RemovePrim(EXP6_PRISM_JOINT_PATH)
+        joint = UsdPhysics.PrismaticJoint.Define(stage, EXP6_PRISM_JOINT_PATH)
+        joint.CreateBody0Rel().SetTargets([EXP6_ROTOR_PATH])
+        joint.CreateBody1Rel().SetTargets([EXP6_BOB_PATH])
+        joint.CreateLocalPos0Attr().Set(
+            Gf.Vec3f(0.0, 0.0, float(bob_z_offset_local))
+        )
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("X")
+        joint.CreateLowerLimitAttr().Set(float(EXP6_PRISM_LIMIT_MIN))
+        joint.CreateUpperLimitAttr().Set(float(EXP6_PRISM_LIMIT_MAX))
+
+        # Linear drive (SI units for prismatic joints)
+        UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
+        drive = UsdPhysics.DriveAPI(joint.GetPrim(), "linear")
+        drive.CreateTypeAttr().Set("force")
+        drive.CreateTargetPositionAttr().Set(float(r_target))
+        drive.CreateTargetVelocityAttr().Set(0.0)
+        drive.CreateMaxForceAttr().Set(1.0e9)
+        drive.CreateStiffnessAttr().Set(0.0)
+        drive.CreateDampingAttr().Set(0.0)
+
+    def _apply_exp6_spring_params(self) -> None:
+        """Push current k, c, r_target onto the prismatic-joint linear drive.
+
+        PrismaticJoint drives work in metres directly, so the stiffness and
+        damping values map 1:1 to SI (N/m, N·s/m).
+        """
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            joint_prim = stage.GetPrimAtPath(EXP6_PRISM_JOINT_PATH)
+            if not (joint_prim and joint_prim.IsValid()):
+                return
+            drive = UsdPhysics.DriveAPI(joint_prim, "linear")
+            drive.GetStiffnessAttr().Set(float(self.exp6_spring_k))
+            drive.GetDampingAttr().Set(float(self.exp6_damper))
+            drive.GetTargetPositionAttr().Set(float(self.exp6_radius))
+            self.exp6_drive_target_attr = drive.GetTargetPositionAttr()
+        except Exception as exc:
+            carb.log_error(f"_apply_exp6_spring_params: {exc}")
+
+    async def _start_exp6_sim(self):
+        """Reset bob + rotor, then spin the rotor up to target ω.
+
+        The rotor is kinematic; its rotation is updated each tick by
+        `_run_exp6_rotor_loop`.  PhysX integrates the bob via the prismatic
+        spring drive, producing a physically correct centripetal response.
+        """
+        try:
+            if not self.exp6_scene_built:
+                await self._setup_exp6_scene()
+
+            tl = omni.timeline.get_timeline_interface()
+            tl.stop()
+            await asyncio.sleep(0.05)
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+
+            # Update mass in case the user moved the slider
+            await self._apply_mass_at(EXP6_BOB_PATH, self.exp6_mass)
+            self._apply_exp6_spring_params()
+
+            # Reset rotor orientation (both physics rotor and visual frame)
+            if self.exp6_rotor_rotate_op is not None:
+                try:
+                    self.exp6_rotor_rotate_op.Set(0.0)
+                except Exception:
+                    pass
+            if self.exp6_visual_rotate_op is not None:
+                try:
+                    self.exp6_visual_rotate_op.Set(0.0)
+                except Exception:
+                    pass
+
+            # Reset bob pose to (r, 0, bob_z)
+            bob_z = (EXP6_TABLE_Z + EXP6_TABLE_THICKNESS * 0.5
+                     + EXP6_BOB_SIZE * 0.5 + 0.001)
+            bob_prim = stage.GetPrimAtPath(EXP6_BOB_PATH)
+            if bob_prim and bob_prim.IsValid():
+                xf = UsdGeom.Xformable(bob_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(
+                    Gf.Vec3d(float(self.exp6_radius), 0.0, float(bob_z))
+                )
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(
+                    Gf.Vec3f(EXP6_BOB_SIZE, EXP6_BOB_SIZE, EXP6_BOB_SIZE)
+                )
+
+            # Cancel any leftover driver task
+            if self.exp6_rotor_task and not self.exp6_rotor_task.done():
+                self.exp6_rotor_task.cancel()
+
+            self.exp6_rotor_angle = 0.0
+            self.exp6_rotor_omega = 0.0
+            self.exp6_bob_x = float(self.exp6_radius)
+            self.exp6_bob_y = 0.0
+            self.exp6_radius_actual = float(self.exp6_radius)
+            self.exp6_bob_speed = 0.0
+            self.exp6_spring_force = 0.0
+            self.exp6_samples = []
+            self.exp6_sim_start_time = time.time()
+            self.exp6_phase = "running"
+            self.simulation_control_enabled = True
+
+            tl.play()
+            # Short warmup so PhysX picks up the initial pose cleanly.
+            await asyncio.sleep(EXP6_WARMUP_SECONDS)
+
+            self.exp6_rotor_task = asyncio.ensure_future(
+                self._run_exp6_rotor_loop()
+            )
+            carb.log_warn(
+                f"exp6: started  ω_target={self.exp6_omega:.3f} rad/s  "
+                f"r_target={self.exp6_radius:.3f} m  "
+                f"ω_crit=√(k/m)={math.sqrt(max(0.0, self.exp6_spring_k)/max(1e-9, self.exp6_mass)):.2f} rad/s"
+            )
+        except Exception as exc:
+            carb.log_error(f"_start_exp6_sim: {exc}")
+
+    async def _reset_exp6(self):
+        """Stop rotor driver and return the bob to its rest pose."""
+        self.exp6_phase = "idle"
+        if self.exp6_rotor_task and not self.exp6_rotor_task.done():
+            self.exp6_rotor_task.cancel()
+            self.exp6_rotor_task = None
+        self.exp6_rotor_angle = 0.0
+        self.exp6_rotor_omega = 0.0
+        self.exp6_bob_speed = 0.0
+        self.exp6_spring_force = 0.0
+        self.exp6_samples = []
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            if self.exp6_rotor_rotate_op is not None:
+                self.exp6_rotor_rotate_op.Set(0.0)
+            if self.exp6_visual_rotate_op is not None:
+                self.exp6_visual_rotate_op.Set(0.0)
+            self._apply_exp6_spring_params()
+            bob_z = (EXP6_TABLE_Z + EXP6_TABLE_THICKNESS * 0.5
+                     + EXP6_BOB_SIZE * 0.5 + 0.001)
+            bob_prim = stage.GetPrimAtPath(EXP6_BOB_PATH)
+            if bob_prim and bob_prim.IsValid():
+                xf = UsdGeom.Xformable(bob_prim)
+                xf.ClearXformOpOrder()
+                xf.AddTranslateOp().Set(
+                    Gf.Vec3d(float(self.exp6_radius), 0.0, float(bob_z))
+                )
+                xf.AddOrientOp().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                xf.AddScaleOp().Set(
+                    Gf.Vec3f(EXP6_BOB_SIZE, EXP6_BOB_SIZE, EXP6_BOB_SIZE)
+                )
+            # Also zero any residual velocity on the bob so Reset is crisp
+            try:
+                from omni.isaac.dynamic_control import _dynamic_control
+                if self._dc_interface is None:
+                    self._dc_interface = (
+                        _dynamic_control.acquire_dynamic_control_interface()
+                    )
+                h = self._dc_interface.get_rigid_body(EXP6_BOB_PATH)
+                if h != _dynamic_control.INVALID_HANDLE:
+                    self._dc_interface.set_rigid_body_linear_velocity(
+                        h, (0.0, 0.0, 0.0)
+                    )
+                    self._dc_interface.set_rigid_body_angular_velocity(
+                        h, (0.0, 0.0, 0.0)
+                    )
+            except Exception:
+                pass
+        except Exception as exc:
+            carb.log_error(f"_reset_exp6: {exc}")
+
+    async def _run_exp6_rotor_loop(self):
+        """Spin the kinematic rotor at the user's target ω.
+
+        Implements a linear velocity ramp so the bob does not get a sudden
+        infinite acceleration at t = 0 (which would make the prismatic
+        drive overshoot and jitter).  The rotor is kinematic so PhysX will
+        honour the pose updates verbatim.
+        """
+        dt = 1.0 / max(30.0, EXP6_ROTOR_UPDATE_HZ)
+        ramp = max(0.05, float(self.exp6_ramp_time))
+        try:
+            while self.exp6_phase == "running":
+                sim_time = time.time() - self.exp6_sim_start_time
+                omega_target = float(self.exp6_omega)
+                # Linear ramp from 0 to target over `ramp_time`
+                if sim_time < ramp:
+                    omega_now = omega_target * (sim_time / ramp)
+                    angle_now = 0.5 * omega_target * (sim_time * sim_time) / ramp
+                else:
+                    omega_now = omega_target
+                    angle_now = (0.5 * omega_target * ramp
+                                 + omega_target * (sim_time - ramp))
+                self.exp6_rotor_omega = float(omega_now)
+                self.exp6_rotor_angle = float(angle_now)
+                angle_deg = float(math.degrees(angle_now))
+                if self.exp6_rotor_rotate_op is not None:
+                    try:
+                        self.exp6_rotor_rotate_op.Set(angle_deg)
+                    except Exception:
+                        pass
+                if self.exp6_visual_rotate_op is not None:
+                    try:
+                        self.exp6_visual_rotate_op.Set(angle_deg)
+                    except Exception:
+                        pass
+                await asyncio.sleep(dt)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            carb.log_error(f"_run_exp6_rotor_loop: {exc}")
+
+    def _read_exp6_state(self):
+        """Return (x_world, y_world, speed, radius_actual) from PhysX.
+
+        All values are derived from PhysX-integrated state: the bob pose
+        and linear velocity.  No F=mv²/r shortcut.
+        """
+        x = y = speed = r_actual = 0.0
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if stage:
+                prim = stage.GetPrimAtPath(EXP6_BOB_PATH)
+                if prim and prim.IsValid():
+                    mtx = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(0)
+                    t = mtx.ExtractTranslation()
+                    x = float(t[0])
+                    y = float(t[1])
+                    r_actual = math.sqrt(x * x + y * y)
+            from omni.isaac.dynamic_control import _dynamic_control
+            if self._dc_interface is None:
+                self._dc_interface = (
+                    _dynamic_control.acquire_dynamic_control_interface()
+                )
+            h = self._dc_interface.get_rigid_body(EXP6_BOB_PATH)
+            if h != _dynamic_control.INVALID_HANDLE:
+                v = self._dc_interface.get_rigid_body_linear_velocity(h)
+                if v:
+                    # Only the horizontal plane participates in circular motion
+                    speed = math.sqrt(float(v[0]) ** 2 + float(v[1]) ** 2)
+        except Exception:
+            pass
+        return x, y, speed, r_actual
+
+    def _exp6_update_spring_visual(self, r_actual: float):
+        """Scale the green spring rod to the instantaneous spring length."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            prim = stage.GetPrimAtPath(EXP6_SPRING_VISUAL_PATH)
+            if not (prim and prim.IsValid()):
+                return
+            xf = UsdGeom.Xformable(prim)
+            ops = xf.GetOrderedXformOps()
+            if len(ops) < 2:
+                return
+            length = max(0.005, float(r_actual))
+            ops[0].Set(Gf.Vec3d(length * 0.5, 0.0, 0.018))
+            ops[1].Set(Gf.Vec3f(length, 0.008, 0.008))
+        except Exception:
+            pass
+
+    def _exp6_force_theory(self) -> float:
+        """Analytical reference F_c = m · ω² · r_target (for the UI)."""
+        return float(
+            self.exp6_mass * (self.exp6_omega ** 2) * self.exp6_radius
+        )
+
+    def _exp6_force_from_kinematics(self, r_actual: float, speed: float) -> float:
+        """Centripetal force derived from the bob's *measured* v and r.
+
+        Not the formula the user asked us to avoid (m ω² r with user-set
+        ω and r): this uses the speed and radius PhysX integrated out of
+        the simulation, so if anything it is a cross-check of the spring
+        force.
+        """
+        r_safe = max(1e-4, float(r_actual))
+        return float(self.exp6_mass * (speed ** 2) / r_safe)
+
+    # --- Exp5 report generation -------------------------------------------
+
+    async def _generate_exp5_report(self, ws):
+        """Generate a formal Experiment 5 report from the last web run."""
+        try:
+            import base64
+            from datetime import datetime
+
+            from core.exp5_report import generate_exp5_report
+            from core.reporter import ReportGenerator
+
+            async def progress(phase: str, current: int, total: int):
+                if not ws.closed:
+                    await ws.send_json({"type": "exp5_report_progress", "data": {
+                        "phase": phase, "current": current, "total": total,
+                    }})
+
+            if len(self.exp5_samples) < 20:
+                if not ws.closed:
+                    await ws.send_json({"type": "exp5_report_progress", "data": {
+                        "phase": "Not enough data. Run Experiment 5 for several seconds before exporting.",
+                        "current": 0,
+                        "total": 0,
+                    }})
+                return
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join(_PROJECT_ROOT, "outputs", f"expt5_web_report_{ts}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            await progress("Preparing report template", 1, 5)
+            params = {
+                "mass_kg": float(self.exp5_m),
+                "length_m": float(self.exp5_L),
+                "pivot_distance_m": float(self.exp5_x),
+                "theta0_deg": float(self.exp5_theta0_deg),
+            }
+
+            try:
+                # Generate the Markdown template after analysis below once the
+                # summary exists; this first call verifies that Jinja2/templates
+                # are available and keeps any template exception isolated.
+                _ = ReportGenerator()
+            except Exception as exc:
+                carb.log_warn(f"exp5: ReportGenerator unavailable: {exc}")
+
+            await progress("Generating Python plots and PDF", 2, 5)
+            result = generate_exp5_report(
+                samples=list(self.exp5_samples),
+                params=params,
+                out_dir=out_dir,
+            )
+
+            await progress("Rendering Markdown template", 3, 5)
+            md_path = result["paths"]["markdown"]
+            try:
+                ReportGenerator().render(
+                    "expt5_rotational_inertia.md.j2",
+                    md_path,
+                    {
+                        "summary": result["summary"],
+                        "period_rows": result["period_rows"],
+                        "plot_files": result["plot_files"],
+                    },
+                )
+                # Rebuild the ZIP after replacing the fallback Markdown.
+                import zipfile
+                zip_path = result["paths"]["zip"]
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname in os.listdir(out_dir):
+                        zf.write(os.path.join(out_dir, fname), fname)
+            except Exception as exc:
+                carb.log_warn(f"exp5: Markdown report template skipped: {exc}")
+
+            await progress("Packaging downloadable files", 4, 5)
+
+            def read_b64(path: str) -> str:
+                with open(path, "rb") as f:
+                    return base64.b64encode(f.read()).decode("ascii")
+
+            paths = result["paths"]
+            result_data = {
+                "summary": result["summary"],
+                "period_rows": result["period_rows"],
+                "csv_b64": read_b64(paths["csv"]),
+                "period_csv_b64": read_b64(paths["period_csv"]),
+                "report_md": read_b64(paths["markdown"]),
+                "zip_b64": read_b64(paths["zip"]),
+                "plots": {
+                    "timeseries": "data:image/png;base64," + read_b64(paths["timeseries"]),
+                    "period_curve": "data:image/png;base64," + read_b64(paths["period_curve"]),
+                    "inertia": "data:image/png;base64," + read_b64(paths["inertia"]),
+                    "cycle_periods": "data:image/png;base64," + read_b64(paths["cycle_periods"]),
+                },
+                "files": {
+                    "csv": os.path.basename(paths["csv"]),
+                    "period_csv": os.path.basename(paths["period_csv"]),
+                    "markdown": os.path.basename(paths["markdown"]),
+                    "zip": os.path.basename(paths["zip"]),
+                },
+            }
+
+            await progress("Report ready", 5, 5)
+            if not ws.closed:
+                await ws.send_json({"type": "exp5_report_ready", "data": result_data})
+            carb.log_warn(f"exp5: report data ready -> {paths['zip']}")
+
+        except Exception as exc:
+            carb.log_error(f"_generate_exp5_report: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+            if not ws.closed:
+                await ws.send_json({"type": "exp5_report_progress", "data": {
+                    "phase": f"Error: {exc}", "current": 0, "total": 0,
+                }})
+
+    # --- Exp6 report generation -------------------------------------------
+
+    async def _generate_exp6_report(self, ws):
+        """Generate a formal Experiment 6 report from the last web run.
+
+        The raw data come from `self.exp6_samples`, which is filled by the
+        telemetry loop from PhysX-measured bob pose and velocity.  Matplotlib
+        is used for all plots and for assembling the final PDF, so the report
+        can be produced inside the Isaac Sim Python environment without
+        relying on browser screenshots, Word, or pandoc.
+        """
+        try:
+            import base64
+            import textwrap
+            import zipfile
+            from datetime import datetime
+
+            import pandas as pd
+            import matplotlib
+            matplotlib.use("Agg", force=True)
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_pdf import PdfPages
+
+            from core.reporter import ReportGenerator
+
+            async def progress(phase: str, current: int, total: int):
+                if not ws.closed:
+                    await ws.send_json({"type": "exp6_report_progress", "data": {
+                        "phase": phase, "current": current, "total": total,
+                    }})
+
+            if len(self.exp6_samples) < 20:
+                if not ws.closed:
+                    await ws.send_json({"type": "exp6_report_progress", "data": {
+                        "phase": "Not enough data. Start Experiment 6 and let it run for a few seconds before exporting.",
+                        "current": 0,
+                        "total": 0,
+                    }})
+                return
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join(_PROJECT_ROOT, "outputs", f"expt6_web_report_{ts}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            await progress("Preparing raw data", 1, 5)
+            df = pd.DataFrame(self.exp6_samples).copy()
+            df = df.replace([np.inf, -np.inf], np.nan).dropna(
+                subset=["time_s", "radius_actual_m", "speed_m_s", "force_measured_N"]
+            )
+            if len(df) < 20:
+                raise RuntimeError("Collected Exp6 data are incomplete; rerun the experiment.")
+            df = df.sort_values("time_s")
+            csv_path = os.path.join(out_dir, "exp6_raw_timeseries.csv")
+            df.to_csv(csv_path, index=False)
+
+            tmax = float(df["time_s"].max())
+            steady_start = max(float(self.exp6_ramp_time) + 1.0, 0.55 * tmax)
+            steady_df = df[df["time_s"] >= steady_start]
+            if len(steady_df) < max(10, len(df) // 10):
+                steady_df = df.iloc[max(0, int(0.65 * len(df))):]
+
+            def finite_mean(col: str) -> float:
+                return float(steady_df[col].mean()) if col in steady_df else 0.0
+
+            def finite_std(col: str) -> float:
+                return float(steady_df[col].std(ddof=1)) if col in steady_df and len(steady_df) > 1 else 0.0
+
+            mean_force = finite_mean("force_measured_N")
+            mean_theory = finite_mean("force_theory_N")
+            mean_kin = finite_mean("force_kinematic_N")
+            mean_radius = finite_mean("radius_actual_m")
+            mean_speed = finite_mean("speed_m_s")
+            mean_omega = finite_mean("omega_live_rad_s")
+            mean_ext = finite_mean("spring_extension_m")
+            force_error_pct = (
+                (mean_force - mean_theory) / mean_theory * 100.0
+                if abs(mean_theory) > 1e-12 else 0.0
+            )
+            kin_error_pct = (
+                (mean_force - mean_kin) / mean_kin * 100.0
+                if abs(mean_kin) > 1e-12 else 0.0
+            )
+
+            # Sensor-resolution style uncertainties for the simulated
+            # apparatus.  These are intentionally conservative and reported
+            # separately from the actual steady-state standard deviation.
+            mass_unc = max(0.0001, 0.001 * float(self.exp6_mass))
+            radius_unc = 0.0005
+            speed_unc = 0.001
+            force_unc = max(0.001, abs(float(self.exp6_spring_k)) * radius_unc)
+            rel_force_unc = (
+                math.sqrt(
+                    (mass_unc / max(1e-9, float(self.exp6_mass))) ** 2
+                    + (2.0 * speed_unc / max(1e-9, mean_speed)) ** 2
+                    + (radius_unc / max(1e-9, mean_radius)) ** 2
+                ) * abs(mean_kin)
+                if mean_speed > 1e-9 and mean_radius > 1e-9 else force_unc
+            )
+
+            summary = {
+                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "n_samples": int(len(df)),
+                "duration_s": tmax,
+                "steady_start_s": steady_start,
+                "mass_kg": float(self.exp6_mass),
+                "radius_target_m": float(self.exp6_radius),
+                "omega_target_rad_s": float(self.exp6_omega),
+                "spring_k_N_m": float(self.exp6_spring_k),
+                "damper_N_s_m": float(self.exp6_damper),
+                "mean_radius_m": mean_radius,
+                "std_radius_m": finite_std("radius_actual_m"),
+                "mean_speed_m_s": mean_speed,
+                "std_speed_m_s": finite_std("speed_m_s"),
+                "mean_omega_rad_s": mean_omega,
+                "mean_extension_m": mean_ext,
+                "mean_force_N": mean_force,
+                "std_force_N": finite_std("force_measured_N"),
+                "mean_theory_force_N": mean_theory,
+                "mean_kinematic_force_N": mean_kin,
+                "force_error_pct": force_error_pct,
+                "kinematic_error_pct": kin_error_pct,
+                "mass_unc_kg": mass_unc,
+                "radius_unc_m": radius_unc,
+                "speed_unc_m_s": speed_unc,
+                "force_unc_N": force_unc,
+                "propagated_force_unc_N": rel_force_unc,
+            }
+
+            await progress("Generating Python plots", 2, 5)
+            plt.rcParams["font.family"] = "DejaVu Sans"
+            plt.rcParams["axes.unicode_minus"] = False
+
+            def save_timeseries(path: str):
+                fig, axs = plt.subplots(3, 1, figsize=(9, 8), sharex=True)
+                axs[0].plot(df["time_s"], df["radius_actual_m"], lw=1.8, label="Actual radius")
+                axs[0].axhline(self.exp6_radius, color="gray", ls="--", lw=1, label="Target radius")
+                axs[0].set_ylabel("Radius (m)")
+                axs[0].legend()
+                axs[0].grid(True, alpha=0.3)
+
+                axs[1].plot(df["time_s"], df["speed_m_s"], color="royalblue", lw=1.8)
+                axs[1].set_ylabel("Tangential speed (m/s)")
+                axs[1].grid(True, alpha=0.3)
+
+                axs[2].plot(df["time_s"], df["force_measured_N"], color="firebrick", lw=1.8, label="Measured spring force")
+                axs[2].plot(df["time_s"], df["force_theory_N"], color="black", ls="--", lw=1.2, label="Theory reference")
+                axs[2].set_ylabel("Force (N)")
+                axs[2].set_xlabel("Time (s)")
+                axs[2].legend()
+                axs[2].grid(True, alpha=0.3)
+                fig.suptitle("Experiment 6 Raw Time Series")
+                fig.tight_layout()
+                fig.savefig(path, dpi=220, bbox_inches="tight")
+                plt.close(fig)
+
+            def save_force_compare(path: str):
+                fig, ax = plt.subplots(figsize=(8.4, 5.2))
+                ax.plot(df["time_s"], df["force_measured_N"], lw=2, label="Measured: spring force k*dx")
+                ax.plot(df["time_s"], df["force_kinematic_N"], lw=1.4, label="From PhysX v,r: m*v^2/r")
+                ax.plot(df["time_s"], df["force_theory_N"], lw=1.4, ls="--", label="Reference: m*omega^2*r")
+                ax.axvspan(steady_start, tmax, color="green", alpha=0.08, label="steady-state window")
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("Centripetal force (N)")
+                ax.set_title("Measured and Reference Centripetal Force")
+                ax.grid(True, alpha=0.3)
+                ax.legend(fontsize=8)
+                fig.tight_layout()
+                fig.savefig(path, dpi=220, bbox_inches="tight")
+                plt.close(fig)
+
+            def save_orbit(path: str):
+                fig, ax = plt.subplots(figsize=(6.2, 6.2))
+                ax.plot(df["bob_x_m"], df["bob_y_m"], lw=1.6, label="PhysX bob path")
+                circle = plt.Circle((0, 0), self.exp6_radius, color="gray", fill=False, ls="--", lw=1.2, label="Target radius")
+                ax.add_patch(circle)
+                ax.set_aspect("equal", adjustable="box")
+                ax.set_xlabel("x (m)")
+                ax.set_ylabel("y (m)")
+                ax.set_title("Top View of the Circular Motion")
+                ax.grid(True, alpha=0.3)
+                ax.legend(fontsize=8)
+                fig.tight_layout()
+                fig.savefig(path, dpi=220, bbox_inches="tight")
+                plt.close(fig)
+
+            def save_error(path: str):
+                fig, ax = plt.subplots(figsize=(8.4, 4.8))
+                ax.plot(df["time_s"], df["force_error_pct"], color="purple", lw=1.5)
+                ax.axhline(0, color="black", lw=0.8)
+                ax.axvspan(steady_start, tmax, color="green", alpha=0.08)
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("Error vs theory (%)")
+                ax.set_title("Percent Error of Measured Spring Force")
+                ax.grid(True, alpha=0.3)
+                fig.tight_layout()
+                fig.savefig(path, dpi=220, bbox_inches="tight")
+                plt.close(fig)
+
+            plots = {
+                "timeseries": os.path.join(out_dir, "exp6_timeseries.png"),
+                "force_compare": os.path.join(out_dir, "exp6_force_compare.png"),
+                "orbit": os.path.join(out_dir, "exp6_orbit.png"),
+                "error": os.path.join(out_dir, "exp6_error.png"),
+            }
+            save_timeseries(plots["timeseries"])
+            save_force_compare(plots["force_compare"])
+            save_orbit(plots["orbit"])
+            save_error(plots["error"])
+
+            await progress("Rendering Markdown template", 3, 5)
+            md_path = os.path.join(out_dir, "Expt6_Centripetal_Force_Report.md")
+            try:
+                ReportGenerator().render(
+                    "expt6_centripetal_force.md.j2",
+                    md_path,
+                    {
+                        "summary": summary,
+                        "steady_rows": steady_df.tail(12).to_dict(orient="records"),
+                        "plot_files": {k: os.path.basename(v) for k, v in plots.items()},
+                    },
+                )
+            except Exception as exc:
+                carb.log_warn(f"exp6: Markdown report template skipped: {exc}")
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write("# Lab Report for Lab 6 -- Centripetal Force\n\n")
+                    f.write("Markdown template rendering was unavailable, but the PDF report was generated.\n")
+
+            await progress("Building PDF report", 4, 5)
+            pdf_path = os.path.join(out_dir, "Lab_Report_Centripetal_Force.pdf")
+
+            def text_page(pdf: PdfPages, title: str, paragraphs: list[str], footer: str | None = None):
+                fig = plt.figure(figsize=(8.27, 11.69))
+                fig.patch.set_facecolor("white")
+                fig.text(0.5, 0.94, title, ha="center", va="top", fontsize=16, weight="bold")
+                y = 0.88
+                for para in paragraphs:
+                    for line in textwrap.wrap(para, width=92):
+                        fig.text(0.08, y, line, ha="left", va="top", fontsize=10.5)
+                        y -= 0.022
+                    y -= 0.012
+                if footer:
+                    fig.text(0.5, 0.04, footer, ha="center", va="bottom", fontsize=8, color="gray")
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+            def table_page(pdf: PdfPages):
+                fig, ax = plt.subplots(figsize=(8.27, 11.69))
+                ax.axis("off")
+                ax.set_title("Raw Data and Steady-State Summary", fontsize=15, weight="bold", pad=16)
+                rows = [
+                    ["Mass m (kg)", f"{summary['mass_kg']:.5f} +/- {summary['mass_unc_kg']:.5f}"],
+                    ["Target radius r (m)", f"{summary['radius_target_m']:.5f}"],
+                    ["Target angular speed omega (rad/s)", f"{summary['omega_target_rad_s']:.4f}"],
+                    ["Spring stiffness k (N/m)", f"{summary['spring_k_N_m']:.2f}"],
+                    ["Mean actual radius (m)", f"{summary['mean_radius_m']:.5f} +/- {summary['std_radius_m']:.5f}"],
+                    ["Mean tangential speed (m/s)", f"{summary['mean_speed_m_s']:.5f} +/- {summary['std_speed_m_s']:.5f}"],
+                    ["Mean spring extension (m)", f"{summary['mean_extension_m']:.6f}"],
+                    ["Measured force k*dx (N)", f"{summary['mean_force_N']:.5f} +/- {summary['std_force_N']:.5f}"],
+                    ["Reference force m*omega^2*r (N)", f"{summary['mean_theory_force_N']:.5f}"],
+                    ["Kinematic force m*v^2/r (N)", f"{summary['mean_kinematic_force_N']:.5f}"],
+                    ["Error vs reference (%)", f"{summary['force_error_pct']:.3f}"],
+                    ["Samples / duration", f"{summary['n_samples']} / {summary['duration_s']:.3f} s"],
+                ]
+                table = ax.table(
+                    cellText=rows,
+                    colLabels=["Quantity", "Value"],
+                    cellLoc="left",
+                    colLoc="left",
+                    loc="upper center",
+                    bbox=[0.07, 0.30, 0.86, 0.62],
+                )
+                table.auto_set_font_size(False)
+                table.set_fontsize(9.5)
+                for (r, c), cell in table.get_celld().items():
+                    cell.set_edgecolor("#666666")
+                    if r == 0:
+                        cell.set_text_props(weight="bold")
+                        cell.set_facecolor("#eeeeee")
+                note = (
+                    "The complete raw time-series table is exported as exp6_raw_timeseries.csv. "
+                    "The PDF table reports the steady-state window, because the initial ramp is a transient."
+                )
+                ax.text(0.07, 0.22, textwrap.fill(note, width=90), fontsize=10, va="top")
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+            def image_page(pdf: PdfPages, image_path: str, title: str, caption: str):
+                img = plt.imread(image_path)
+                fig, ax = plt.subplots(figsize=(8.27, 11.69))
+                ax.axis("off")
+                fig.text(0.5, 0.95, title, ha="center", va="top", fontsize=15, weight="bold")
+                ax.imshow(img)
+                fig.text(0.08, 0.08, textwrap.fill(caption, width=105), ha="left", va="bottom", fontsize=10)
+                pdf.savefig(fig, bbox_inches="tight")
+                plt.close(fig)
+
+            with PdfPages(pdf_path) as pdf:
+                text_page(pdf, "Lab Report for Lab 6 -- Centripetal Force", [
+                    "The Chinese University of Hong Kong, Shenzhen",
+                    "PHY 1002 Physics Laboratory",
+                    "Author: [Student Name]",
+                    "Student Number: [Student ID]",
+                    f"Date generated: {summary['generated_at']}",
+                    "This report was generated automatically from the Experiment 6 web simulation data. "
+                    "All plots were produced by Python/Matplotlib from the recorded PhysX telemetry.",
+                ], footer="Generated by AI Physics Experiment Platform -- NVIDIA Isaac Sim / PhysX 5")
+
+                text_page(pdf, "1  Objective and Theory", [
+                    "The objective of this experiment was to investigate how the centripetal force depends on mass, tangential speed, and radius for an object in uniform circular motion. "
+                    "In the physical PASCO apparatus, a force sensor measures the inward force transmitted through a cable while a photogate measures the tangential speed.",
+                    "For uniform circular motion the required net inward force is F_c = m v^2 / r.  Since v = omega r, the same relationship can also be written as F_c = m omega^2 r. "
+                    "Centripetal force is not an additional force; it is the vector sum of the real forces acting toward the centre.  In this simulation, that real force is the spring constraint force.",
+                    "The simulation did not compute the motion from the closed-form equation.  A dynamic bob was connected to a rotating frame by a PhysX prismatic joint with a linear drive. "
+                    "PhysX integrated the bob's motion; the measured centripetal force in this report is k times the measured spring extension.",
+                ])
+
+                text_page(pdf, "2  Method", [
+                    "A horizontal rotating arm was built procedurally in Isaac Sim.  The rotor was driven kinematically at the chosen angular velocity and the bob was represented by a dynamic rigid body resting on a frictionless table. "
+                    "Gravity remained enabled, while the table supplied the normal force.  The bob was constrained along the rotating arm by a prismatic joint whose linear drive represented the tether spring.",
+                    "At the start of the run the rotor speed was ramped up to avoid an impulsive acceleration.  During the run, the server recorded the bob position, velocity, actual radius, spring extension, spring force, and reference force at approximately the telemetry rate.",
+                    "After the run, the steady-state region was selected automatically after the initial ramp.  The mean measured force was compared with both m omega^2 r and m v^2 / r, where v and r were taken from the PhysX-integrated state.",
+                ])
+
+                table_page(pdf)
+
+                image_page(pdf, plots["timeseries"], "3  Raw Data: Time Series",
+                           "Figure 1: Actual radius, tangential speed, and centripetal force versus time. Axis labels include SI units as required by the report guideline.")
+                image_page(pdf, plots["force_compare"], "4  Data Analysis: Force Comparison",
+                           "Figure 2: Measured spring force compared with the theoretical reference and the kinematic force computed from PhysX-measured speed and radius.")
+                image_page(pdf, plots["orbit"], "5  Raw Data: Orbit",
+                           "Figure 3: Top view of the bob trajectory. The dashed circle is the target radius set by the spring drive.")
+                image_page(pdf, plots["error"], "6  Error Analysis",
+                           "Figure 4: Percent error of the measured spring force relative to the reference m omega squared r. The green band marks the steady-state window used in the summary table.")
+
+                text_page(pdf, "7  Data and Error Analysis", [
+                    f"In the steady-state window, the measured spring force was {summary['mean_force_N']:.5f} N and the reference force was {summary['mean_theory_force_N']:.5f} N. "
+                    f"The percent difference was {summary['force_error_pct']:.3f}%.  The force computed from PhysX-measured v and r was {summary['mean_kinematic_force_N']:.5f} N, with a difference of {summary['kinematic_error_pct']:.3f}% from the spring-force measurement.",
+                    f"The dominant simulated measurement uncertainties were taken as delta m = {summary['mass_unc_kg']:.5f} kg, delta r = {summary['radius_unc_m']:.4f} m, and delta v = {summary['speed_unc_m_s']:.4f} m/s. "
+                    f"Propagating these through F = m v^2 / r gives an estimated force uncertainty of approximately {summary['propagated_force_unc_N']:.5f} N. "
+                    "The steady-state standard deviation of the measured spring force is also reported in the raw data table.",
+                    "The initial ramp portion has a larger error because the system is not yet in uniform circular motion.  This is expected: during the transient, part of the spring force changes the bob's radial motion and not only its centripetal acceleration.",
+                ])
+
+                text_page(pdf, "8  Conclusion", [
+                    "The data support the centripetal-force model.  After the transient ramp, the measured spring force agreed with the force predicted from the bob's measured circular motion.  The agreement demonstrates that the inward spring force supplies the net centripetal force.",
+                    "Manual conclusion question 1: When radius and speed are held approximately constant, the centripetal force is directly proportional to mass because F_c = m v^2 / r.",
+                    "Manual conclusion question 2: When mass and radius are held approximately constant, the force is proportional to the square of tangential speed.  Plotting force against v^2 should therefore produce an approximately straight line.",
+                    "Manual conclusion question 3: If mass and angular velocity are held constant, F_c = m omega^2 r predicts that force increases with radius.  If mass and tangential speed are held constant instead, F_c = m v^2 / r predicts that force decreases as radius increases.  The apparent difference comes from which speed variable is controlled.",
+                    "Manual conclusion question 4: Equation (1) is valid.  The radius result agrees with it because the radius procedure in the manual controls the time for one rotation, and therefore controls angular velocity more directly than tangential speed.",
+                    "Manual conclusion question 5: Friction between the moving mass and the rotating arm would add an extra non-ideal force.  It could reduce the measured speed and also contaminate the force sensor reading, causing the measured centripetal force to deviate from the ideal relation.",
+                ])
+
+            await progress("Packaging downloadable files", 5, 5)
+            zip_path = os.path.join(os.path.dirname(out_dir), f"{os.path.basename(out_dir)}.zip")
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname in os.listdir(out_dir):
+                    zf.write(os.path.join(out_dir, fname), fname)
+
+            def read_b64(path: str) -> str:
+                with open(path, "rb") as f:
+                    return base64.b64encode(f.read()).decode("ascii")
+
+            result_data = {
+                "summary": summary,
+                "pdf_b64": read_b64(pdf_path),
+                "csv_b64": read_b64(csv_path),
+                "report_md": read_b64(md_path),
+                "zip_b64": read_b64(zip_path),
+                "plots": {
+                    "timeseries": "data:image/png;base64," + read_b64(plots["timeseries"]),
+                    "force_compare": "data:image/png;base64," + read_b64(plots["force_compare"]),
+                    "orbit": "data:image/png;base64," + read_b64(plots["orbit"]),
+                    "error": "data:image/png;base64," + read_b64(plots["error"]),
+                },
+                "files": {
+                    "pdf": os.path.basename(pdf_path),
+                    "csv": os.path.basename(csv_path),
+                    "markdown": os.path.basename(md_path),
+                    "zip": os.path.basename(zip_path),
+                },
+            }
+
+            if not ws.closed:
+                await ws.send_json({"type": "exp6_report_ready", "data": result_data})
+            carb.log_warn(f"exp6: report generated -> {pdf_path}")
+
+        except Exception as exc:
+            carb.log_error(f"_generate_exp6_report: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+            if not ws.closed:
+                await ws.send_json({"type": "exp6_report_progress", "data": {
+                    "phase": f"Error: {exc}", "current": 0, "total": 0,
+                }})
+
+    # --- Exp6 camera --------------------------------------------------------
+    #
+    # Looks diagonally down onto the rotating arm from the +X/-Y side so the
+    # orbital motion of the red bob is clearly visible, with the spring rod
+    # in the foreground.
+    _EXP6_CAM_EYE = Gf.Vec3d(0.95, -0.95, 1.40)
+    _EXP6_CAM_TGT = Gf.Vec3d(0.0, 0.0, EXP6_TABLE_Z + 0.05)
+    _EXP6_CAM_FL = 22.0
+
+    def _force_exp6_camera(self, stage=None):
+        """Position the viewport camera over the rotating apparatus."""
+        eye = self._EXP6_CAM_EYE
+        tgt = self._EXP6_CAM_TGT
+        fl = self._EXP6_CAM_FL
+        try:
+            self._try_set_camera_view(eye, tgt)
+            if stage is None:
+                stage = omni.usd.get_context().get_stage()
+            if not stage:
+                return
+            viewport = vp_util.get_active_viewport()
+            cam_path = viewport.get_active_camera() if viewport else "/OmniverseKit_Persp"
+            cam_prim = stage.GetPrimAtPath(cam_path)
+            if not cam_prim or not cam_prim.IsValid():
+                cam_prim = stage.GetPrimAtPath("/OmniverseKit_Persp")
+            if cam_prim and cam_prim.IsValid():
+                mtx = self._build_lookat_matrix(eye, tgt)
+                xform = UsdGeom.Xformable(cam_prim)
+                xform.ClearXformOpOrder()
+                xform.AddTransformOp().Set(mtx)
+                camera = UsdGeom.Camera(cam_prim)
+                camera.GetFocalLengthAttr().Set(fl)
+                camera.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10000000.0))
+            self.camera_controller.set_from_eye_target(eye, tgt)
+            carb.log_warn(f"exp6 camera: eye={eye} tgt={tgt} fl={fl}")
+        except Exception as exc:
+            carb.log_error(f"_force_exp6_camera: {exc}")
+
+    async def _deferred_exp6_camera(self):
+        for delay in (1.0, 2.0, 4.0):
+            await asyncio.sleep(delay)
+            if self.current_experiment != "6":
+                return
+            self._force_exp6_camera()
 
     # --- Experiment 4 — driven damped torsional oscillator (PhysX drive) ----
     #
@@ -3184,6 +4831,143 @@ class WebRTCServer:
         w0_sq = float(self.exp4_spring_k) / I
         return float(math.degrees(math.atan2(float(self.exp4_damping_gamma) * w, w0_sq - w * w)))
 
+    # --- Exp4 lab-report pipeline ------------------------------------------
+
+    async def _run_exp4_full_experiment(self, ws):
+        """Run free-oscillation fit + 3-damping resonance sweep + phase
+        comparison runs, render plots / Markdown / ZIP, and ship the result
+        back as a base64 payload (mirrors the Exp 2 pipeline)."""
+        try:
+            import base64
+            from datetime import datetime
+            from core.exp4_report import (
+                run_exp4_full_experiment,
+                package_zip,
+            )
+
+            # The user's chosen damping anchors the report so that the
+            # "lightest" curve always reproduces what they just observed.
+            user_gamma = max(1e-3, float(self.exp4_damping_gamma))
+            damping_levels = (
+                user_gamma,
+                user_gamma * 2.5,
+                user_gamma * 6.0,
+            )
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join(_PROJECT_ROOT, "outputs", f"expt4_web_{ts}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            loop = asyncio.get_event_loop()
+
+            async def progress(name: str, current: int, total: int):
+                if not ws.closed:
+                    await ws.send_json({"type": "exp4_progress", "data": {
+                        "phase": name, "current": current, "total": total,
+                    }})
+
+            # The analysis pipeline is CPU-bound and synchronous; run it in
+            # an executor so the WebSocket / WebRTC loops keep their cadence.
+            progress_holder: list = []
+
+            def _on_progress_sync(name: str, current: int, total: int):
+                progress_holder.append((name, current, total))
+
+            async def _drain_progress():
+                while not ws.closed:
+                    if progress_holder:
+                        name, cur, tot = progress_holder.pop(0)
+                        await progress(name, cur, tot)
+                    else:
+                        await asyncio.sleep(0.25)
+
+            drain_task = asyncio.ensure_future(_drain_progress())
+
+            await progress("Starting Exp 4 report pipeline", 0, 5)
+
+            def _do_run():
+                return run_exp4_full_experiment(
+                    out_dir,
+                    spring_k=float(self.exp4_spring_k),
+                    disk_mass=float(self.exp4_disk_mass),
+                    disk_radius=float(self.exp4_disk_radius),
+                    disk_thickness=float(EXP4_DISK_THICKNESS),
+                    drive_amp_rad=float(self.exp4_drive_amp),
+                    damping_levels=damping_levels,
+                    f_min_hz=0.10,
+                    f_max_hz=None,  # auto = 2.5·f₀
+                    sweep_points=18,
+                    on_progress=_on_progress_sync,
+                )
+
+            result = await loop.run_in_executor(None, _do_run)
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+
+            await progress("Packaging report", 5, 5)
+            zip_path = package_zip(out_dir)
+            report_path = result["report_path"]
+            pdf_path = result.get("pdf_path")
+
+            def _read_b64(fpath: str) -> str:
+                with open(fpath, "rb") as f:
+                    return base64.b64encode(f.read()).decode("ascii")
+
+            def _img(fname: str) -> Optional[str]:
+                fpath = os.path.join(out_dir, fname)
+                if not os.path.exists(fpath):
+                    return None
+                return "data:image/png;base64," + _read_b64(fpath)
+
+            # Strip non-finite floats so JSON serialises cleanly
+            def _clean(value):
+                if isinstance(value, dict):
+                    return {k: _clean(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [_clean(v) for v in value]
+                if isinstance(value, float):
+                    return value if math.isfinite(value) else None
+                return value
+
+            payload = {
+                "params": _clean(result["summary"]["params"]),
+                "physics": _clean(result["summary"]["physics"]),
+                "free_oscillation_fit": _clean(result["summary"]["free_oscillation_fit"]),
+                "resonance_fits": _clean(result["summary"]["resonance_fits"]),
+                "phase_runs": _clean(result["summary"]["phase_runs"]),
+                "metrics": _clean(result["summary"]["metrics"]),
+                "plots": {
+                    "free_oscillation": _img("fig1_free_oscillation.png"),
+                    "free_oscillation_omega": _img("fig1b_free_oscillation_omega.png"),
+                    "resonance_curves": _img("fig2_resonance_curves.png"),
+                    "phase_lag": _img("fig3_phase_lag.png"),
+                    "phase_comparison": _img("fig4_phase_comparison.png"),
+                },
+                "report_md": _read_b64(report_path),
+                "pdf_b64": (_read_b64(pdf_path) if pdf_path and os.path.exists(pdf_path) else None),
+                "resonance_csv": _read_b64(os.path.join(out_dir, "resonance_curves.csv")),
+                "free_csv": _read_b64(os.path.join(out_dir, "free_oscillation.csv")),
+                "summary_json": _read_b64(os.path.join(out_dir, "summary.json")),
+                "zip_b64": _read_b64(zip_path),
+                "out_dir": out_dir,
+            }
+
+            if not ws.closed:
+                await ws.send_json({"type": "exp4_report_ready", "data": payload})
+            carb.log_warn(f"exp4: full report pipeline complete → {out_dir}")
+
+        except Exception as exc:
+            import traceback
+            carb.log_error(f"_run_exp4_full_experiment: {exc}")
+            carb.log_error(traceback.format_exc())
+            if not ws.closed:
+                await ws.send_json({"type": "exp4_progress", "data": {
+                    "phase": f"Error: {exc}", "current": 0, "total": 0,
+                }})
+
     # --- Exp4 camera --------------------------------------------------------
 
     # A slight elevation + a rotation offset so both the disk face and the
@@ -3334,6 +5118,7 @@ class WebRTCServer:
                     "3": (WebRTCServer._EXP3_CAM_EYE, WebRTCServer._EXP3_CAM_TGT, WebRTCServer._EXP3_CAM_FL),
                     "4": (WebRTCServer._EXP4_CAM_EYE, WebRTCServer._EXP4_CAM_TGT, WebRTCServer._EXP4_CAM_FL),
                     "5": (WebRTCServer._EXP5_CAM_EYE, WebRTCServer._EXP5_CAM_TGT, WebRTCServer._EXP5_CAM_FL),
+                    "6": (WebRTCServer._EXP6_CAM_EYE, WebRTCServer._EXP6_CAM_TGT, WebRTCServer._EXP6_CAM_FL),
                     "7": (Gf.Vec3d(0.0, -1.6, 0.6), Gf.Vec3d(0, 0, 0.0), 24.0),
                     "8": (WebRTCServer._EXP8_CAM_EYE, WebRTCServer._EXP8_CAM_TGT, WebRTCServer._EXP8_CAM_FL),
                 }
@@ -3977,9 +5762,16 @@ class WebRTCServer:
 
     async def _setup_exp8_scene(self):
         """Build the resonance-tube scene from scratch: tube, speaker, piston,
-        marker clips and N kinematic air-slice spheres that will visualise the
+        marker clips and N visual air-slice spheres that will visualise the
         simulated standing-wave displacement field."""
         try:
+            # Drop any stale cached XformOps from a previous scene — those
+            # handles point at prims that are about to be wiped by new_stage().
+            self._exp8_slice_ops = {}
+            self._exp8_diaphragm_op = None
+            self._exp8_piston_op = None
+            self._exp8_handle_op = None
+            self._exp8_grip_op = None
             ctx = omni.usd.get_context()
             ctx.new_stage()
             app = omni.kit.app.get_app()
@@ -4149,36 +5941,35 @@ class WebRTCServer:
             color=(0.85, 0.60, 0.15),
         )
 
-        # Kinematic diaphragm — we reposition each wave tick with the
-        # driver signal so the PhysX pose matches the boundary condition
-        # u(0, t) = A sin(2π f t).
+        # Diaphragm — visual-only cylinder; we reposition each wave tick with
+        # the driver signal.  The pose is the source of truth for the FDM
+        # boundary u(0, t); no PhysX rigid body is needed (purely visual).
         diaphragm = UsdGeom.Cylinder.Define(stage, EXP8_DIAPHRAGM_PATH)
         diaphragm.CreateHeightAttr(0.01)
         diaphragm.CreateRadiusAttr(EXP8_TUBE_DIAMETER / 2.0 * 0.85)
         diaphragm.CreateAxisAttr("X")
         dx = UsdGeom.Xformable(diaphragm.GetPrim())
         dx.ClearXformOpOrder()
-        dx.AddTranslateOp().Set(Gf.Vec3d(EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z))
+        op = dx.AddTranslateOp()
+        op.Set(Gf.Vec3d(EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z))
+        self._exp8_diaphragm_op = op
         diaphragm.CreateDisplayColorAttr([Gf.Vec3f(0.15, 0.75, 1.00)])
-        prim = diaphragm.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(prim)
-        UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
 
     def _exp8_make_piston(self, stage):
-        """Kinematic piston disk + handle at x = L (user-controlled position)."""
+        """Visual piston disk + handle at x = L (user-controlled position).
+        Pure visualisation: physical boundary is enforced inside _exp8_step_wave."""
         disk = UsdGeom.Cylinder.Define(stage, EXP8_PISTON_PATH)
         disk.CreateHeightAttr(0.012)
         disk.CreateRadiusAttr(EXP8_TUBE_DIAMETER / 2.0 * 0.92)
         disk.CreateAxisAttr("X")
         px = UsdGeom.Xformable(disk.GetPrim())
         px.ClearXformOpOrder()
-        px.AddTranslateOp().Set(Gf.Vec3d(
+        op = px.AddTranslateOp()
+        op.Set(Gf.Vec3d(
             EXP8_TUBE_BASE_X + self.exp8_length_m, EXP8_TUBE_Y, EXP8_TUBE_Z,
         ))
+        self._exp8_piston_op = op
         disk.CreateDisplayColorAttr([Gf.Vec3f(0.85, 0.35, 0.20)])
-        prim = disk.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(prim)
-        UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
 
         # Handle rod extending out of the tube (+X end)
         handle = UsdGeom.Cylinder.Define(stage, f"{EXP8_PISTON_PATH}_handle")
@@ -4187,26 +5978,31 @@ class WebRTCServer:
         handle.CreateAxisAttr("X")
         hx = UsdGeom.Xformable(handle.GetPrim())
         hx.ClearXformOpOrder()
-        hx.AddTranslateOp().Set(Gf.Vec3d(
+        h_op = hx.AddTranslateOp()
+        h_op.Set(Gf.Vec3d(
             EXP8_TUBE_BASE_X + self.exp8_length_m + 0.18,
             EXP8_TUBE_Y, EXP8_TUBE_Z,
         ))
+        self._exp8_handle_op = h_op
         handle.CreateDisplayColorAttr([Gf.Vec3f(0.75, 0.75, 0.78)])
 
         grip = UsdGeom.Sphere.Define(stage, f"{EXP8_PISTON_PATH}_grip")
         grip.CreateRadiusAttr(0.020)
         gx = UsdGeom.Xformable(grip.GetPrim())
         gx.ClearXformOpOrder()
-        gx.AddTranslateOp().Set(Gf.Vec3d(
+        g_op = gx.AddTranslateOp()
+        g_op.Set(Gf.Vec3d(
             EXP8_TUBE_BASE_X + self.exp8_length_m + 0.36,
             EXP8_TUBE_Y, EXP8_TUBE_Z,
         ))
+        self._exp8_grip_op = g_op
         grip.CreateDisplayColorAttr([Gf.Vec3f(0.15, 0.15, 0.18)])
 
     def _exp8_make_air_slices(self, stage):
-        """Build N kinematic sphere rigid bodies representing air mass points.
-        These are the nodes whose displacement from equilibrium is produced
-        by the wave equation solver."""
+        """Build N visual-only spheres representing air mass points.
+        Source of truth is the FDM solver; we just push displacements into
+        cached TranslateOps each tick — no PhysX rigid bodies needed."""
+        self._exp8_slice_ops = {}
         for i in range(1, EXP8_N_SLICES):
             path = EXP8_SLICE_PATH_TEMPLATE.format(i)
             existing = stage.GetPrimAtPath(path)
@@ -4216,16 +6012,15 @@ class WebRTCServer:
             sphere.CreateRadiusAttr(EXP8_SLICE_DRAW_RADIUS)
             xf = UsdGeom.Xformable(sphere.GetPrim())
             xf.ClearXformOpOrder()
-            xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
+            op = xf.AddTranslateOp()
+            op.Set(self._exp8_slice_rest_pos(i))
+            self._exp8_slice_ops[i] = op
             # Colour varies along tube for easy identification of standing-wave
             # node/antinode locations at runtime.
             t = i / float(EXP8_N_SLICES)
             sphere.CreateDisplayColorAttr([Gf.Vec3f(
                 0.20 + 0.70 * t, 0.40 + 0.20 * (1.0 - t), 0.85,
             )])
-            prim = sphere.GetPrim()
-            UsdPhysics.RigidBodyAPI.Apply(prim)
-            UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr(True)
 
     def _exp8_slice_rest_pos(self, i: int) -> Gf.Vec3d:
         """Rest-position (no wave displacement) for slice i along the tube."""
@@ -4236,40 +6031,28 @@ class WebRTCServer:
         )
 
     async def _exp8_apply_piston_position(self):
-        """Move the piston prim (and slice rest positions) to match current L.
-        In 'open' mode the piston is parked just past the far end of the tube
-        so the user still sees the hardware; physics uses a Neumann BC."""
+        """Move the piston (and slice rest positions) to match current L using
+        cached XformOps — no schema mutation per call."""
         try:
-            stage = omni.usd.get_context().get_stage()
-            if not stage:
-                return
             if self.exp8_mode == "open":
                 visual_x = EXP8_TUBE_BASE_X + EXP8_TUBE_TOTAL_LENGTH + 0.08
             else:
                 visual_x = EXP8_TUBE_BASE_X + float(self.exp8_length_m)
-            piston = stage.GetPrimAtPath(EXP8_PISTON_PATH)
-            if piston and piston.IsValid():
-                xf = UsdGeom.Xformable(piston)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x, EXP8_TUBE_Y, EXP8_TUBE_Z))
-            handle = stage.GetPrimAtPath(f"{EXP8_PISTON_PATH}_handle")
-            if handle and handle.IsValid():
-                xf = UsdGeom.Xformable(handle)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x + 0.18, EXP8_TUBE_Y, EXP8_TUBE_Z))
-            grip = stage.GetPrimAtPath(f"{EXP8_PISTON_PATH}_grip")
-            if grip and grip.IsValid():
-                xf = UsdGeom.Xformable(grip)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(visual_x + 0.36, EXP8_TUBE_Y, EXP8_TUBE_Z))
-            # Reposition every air-slice sphere to its new rest X
-            for i in range(1, EXP8_N_SLICES):
-                path = EXP8_SLICE_PATH_TEMPLATE.format(i)
-                prim = stage.GetPrimAtPath(path)
-                if prim and prim.IsValid():
-                    xf = UsdGeom.Xformable(prim)
-                    xf.ClearXformOpOrder()
-                    xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
+            with Sdf.ChangeBlock():
+                if self._exp8_piston_op is not None:
+                    self._exp8_piston_op.Set(Gf.Vec3d(
+                        visual_x, EXP8_TUBE_Y, EXP8_TUBE_Z,
+                    ))
+                if self._exp8_handle_op is not None:
+                    self._exp8_handle_op.Set(Gf.Vec3d(
+                        visual_x + 0.18, EXP8_TUBE_Y, EXP8_TUBE_Z,
+                    ))
+                if self._exp8_grip_op is not None:
+                    self._exp8_grip_op.Set(Gf.Vec3d(
+                        visual_x + 0.36, EXP8_TUBE_Y, EXP8_TUBE_Z,
+                    ))
+                for i, op in self._exp8_slice_ops.items():
+                    op.Set(self._exp8_slice_rest_pos(i))
         except Exception as exc:
             carb.log_error(f"_exp8_apply_piston_position: {exc}")
 
@@ -4328,16 +6111,31 @@ class WebRTCServer:
     async def _exp8_driver_loop(self):
         """Background task: integrate the wave equation and update the pose
         of every slice prim so the Isaac Sim viewport reflects the current
-        displacement field.  Runs at ``EXP8_WAVE_TICK_HZ`` with
-        ``EXP8_PHYS_SUBSTEPS`` FDM sub-steps per tick to satisfy CFL even
-        when the user shortens the tube aggressively."""
+        displacement field.
+
+        Critical for visible motion: we yield via
+        ``omni.kit.app.next_update_async`` (same primitive exp2 uses) instead
+        of ``asyncio.sleep``.  ``next_update_async`` actually advances a Kit
+        frame, which (1) ticks Hydra, (2) re-queries the USD attributes we
+        just set on the cached XformOps, and (3) lets the WebRTC track
+        capture the new frame.  ``asyncio.sleep`` yields to the event loop
+        *without* advancing Kit, so Hydra never sees the updated USD and the
+        viewport appears frozen.
+
+        Simulation time is a monotonic accumulator (not wall-clock), so
+        framerate hiccups don't cause discontinuous jumps in the driver
+        phase ``sin(2π f t)`` — that would visibly garble the standing wave.
+        """
         try:
-            tick_dt = 1.0 / float(EXP8_WAVE_TICK_HZ)
-            carb.log_warn("exp8: driver loop started")
+            app = omni.kit.app.get_app()
+            # One FDM tick per Kit frame (~1/60 s).  The simulated frequency
+            # is already scaled down (EXP8_FREQ_SCALE), so a 60 Hz tick rate
+            # is far above the Nyquist limit for any audible mode in the
+            # tube.  We adapt the sub-step count for CFL.
+            tick_dt = 1.0 / 60.0
+            t_sim = 0.0
+            carb.log_warn("exp8: driver loop started (Kit-native render)")
             while self.exp8_driver_running:
-                loop_start = time.time()
-                t_sim = loop_start - self.exp8_sim_start_time
-                # Ensure CFL ⇒ sub-step dt below stability limit
                 L = max(0.05, float(self.exp8_length_m))
                 h = L / EXP8_N_SLICES
                 dt_cfl = 0.9 * h / EXP8_C_SIM
@@ -4346,14 +6144,10 @@ class WebRTCServer:
                 dt = tick_dt / substeps
                 for s in range(substeps):
                     self._exp8_step_wave(dt, t_sim + s * dt)
+                t_sim += tick_dt
                 self._exp8_update_visuals()
                 self._exp8_update_probe(t_sim)
-                # Sleep to maintain tick rate (accounting for work done)
-                remaining = tick_dt - (time.time() - loop_start)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-                else:
-                    await asyncio.sleep(0.001)
+                await app.next_update_async()
         except asyncio.CancelledError:
             carb.log_warn("exp8: driver loop cancelled")
             raise
@@ -4363,34 +6157,34 @@ class WebRTCServer:
             carb.log_error(traceback.format_exc())
 
     def _exp8_update_visuals(self):
-        """Copy the current displacement field into Isaac Sim slice poses."""
+        """Copy the current displacement field into the cached TranslateOps.
+
+        Uses Sdf.ChangeBlock to batch all USD writes into a single notification
+        so the WebRTC viewport renders smoothly.  Op handles are populated
+        once at scene-setup time; we *never* mutate xformOpOrder per frame."""
+        if not self._exp8_slice_ops and self._exp8_diaphragm_op is None:
+            return
         try:
-            stage = omni.usd.get_context().get_stage()
-            if not stage:
-                return
             amp = EXP8_AMP_SCALE
-            # Speaker diaphragm (index 0)
-            diaphragm = stage.GetPrimAtPath(EXP8_DIAPHRAGM_PATH)
-            if diaphragm and diaphragm.IsValid():
-                xf = UsdGeom.Xformable(diaphragm)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(
-                    EXP8_TUBE_BASE_X + amp * float(self._exp8_u_curr[0]),
-                    EXP8_TUBE_Y, EXP8_TUBE_Z,
-                ))
-            # Interior slices
-            for i in range(1, EXP8_N_SLICES):
-                path = EXP8_SLICE_PATH_TEMPLATE.format(i)
-                prim = stage.GetPrimAtPath(path)
-                if not (prim and prim.IsValid()):
-                    continue
-                rest = self._exp8_slice_rest_pos(i)
-                dx = amp * float(self._exp8_u_curr[i])
-                xf = UsdGeom.Xformable(prim)
-                xf.ClearXformOpOrder()
-                xf.AddTranslateOp().Set(Gf.Vec3d(rest[0] + dx, rest[1], rest[2]))
-        except Exception:
-            pass
+            u = self._exp8_u_curr
+            base_x = EXP8_TUBE_BASE_X
+            y = EXP8_TUBE_Y
+            z = EXP8_TUBE_Z
+            with Sdf.ChangeBlock():
+                # Speaker diaphragm — boundary u(0,t)
+                if self._exp8_diaphragm_op is not None:
+                    self._exp8_diaphragm_op.Set(Gf.Vec3d(
+                        base_x + amp * float(u[0]), y, z,
+                    ))
+                # Interior slices: rest-position cached only by index, so we
+                # recompute rest-x once per slice (cheap, no USD calls).
+                L = max(0.05, float(self.exp8_length_m))
+                inv_N = 1.0 / float(EXP8_N_SLICES)
+                for i, op in self._exp8_slice_ops.items():
+                    rest_x = base_x + (i * inv_N) * L
+                    op.Set(Gf.Vec3d(rest_x + amp * float(u[i]), y, z))
+        except Exception as exc:
+            carb.log_error(f"_exp8_update_visuals: {exc}")
 
     def _exp8_update_probe(self, t_sim: float):
         """Sample the current |u| field to drive charts + resonance detection."""
@@ -4514,26 +6308,157 @@ class WebRTCServer:
         except Exception as exc:
             carb.log_error(f"_stop_exp8_drive: {exc}")
 
+    async def _run_exp8_full_experiment(self, ws):
+        """Run all sweeps required by the formal lab report, then send the
+        zipped output + base64 plots / markdown back to the browser.
+
+        Mirrors `_run_exp2_full_experiment`: progress messages stream as
+        ``exp8_progress``; the final payload arrives as ``exp8_report_ready``
+        with base64-encoded ZIP, Markdown, and PNG plots.
+        """
+        try:
+            import base64
+            import zipfile
+            from datetime import datetime as _dt
+            from core.exp8_analysis import (
+                run_full_pipeline, generate_resonance_report,
+                A_DRIVE_DEFAULT,
+            )
+
+            await self._stop_exp8_drive()       # don't fight the live solver
+
+            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+            out_dir = os.path.join(_PROJECT_ROOT, "outputs",
+                                   f"expt8_web_{ts}")
+            os.makedirs(out_dir, exist_ok=True)
+
+            async def progress(name, num, total):
+                if not ws.closed:
+                    await ws.send_json({"type": "exp8_progress", "data": {
+                        "phase": name, "current": num, "total": total,
+                    }})
+
+            await progress("Initialising sweeps", 0, 5)
+
+            loop = asyncio.get_event_loop()
+
+            def _progress_sync(name, num, total):
+                # Re-enter the event loop from the worker thread
+                fut = asyncio.run_coroutine_threadsafe(
+                    progress(name, num, total), loop)
+                try:
+                    fut.result(timeout=2.0)
+                except Exception:
+                    pass
+
+            # The analysis uses a stronger damping than the live simulator so
+            # the steady state is reached quickly enough for a web-friendly run
+            # (~1–2 minutes on the lab server).  Resonance frequencies are
+            # damping-independent.
+            ctx = await loop.run_in_executor(
+                None,
+                lambda: run_full_pipeline(
+                    out_dir,
+                    L_user=float(self.exp8_length_m),
+                    f_user=float(self.exp8_frequency),
+                    mode_user=str(self.exp8_mode),
+                    A_drive=float(self.exp8_amplitude_mm) / 1000.0
+                    if self.exp8_amplitude_mm > 0 else A_DRIVE_DEFAULT,
+                    progress=_progress_sync,
+                ),
+            )
+
+            await progress("Rendering Markdown report", 5, 5)
+            report_path = await loop.run_in_executor(
+                None, lambda: generate_resonance_report(out_dir, ctx))
+
+            zip_path = out_dir + ".zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname in sorted(os.listdir(out_dir)):
+                    zf.write(os.path.join(out_dir, fname), fname)
+
+            def _read_b64(fpath):
+                with open(fpath, "rb") as f:
+                    return base64.b64encode(f.read()).decode("ascii")
+
+            def _maybe_png(name):
+                fp = os.path.join(out_dir, name)
+                if os.path.isfile(fp):
+                    return "data:image/png;base64," + _read_b64(fp)
+                return None
+
+            def _maybe_csv(name):
+                fp = os.path.join(out_dir, name)
+                if os.path.isfile(fp):
+                    return _read_b64(fp)
+                return None
+
+            fit = ctx.get("fit", {})
+            result = {
+                "params": ctx["params"],
+                "metrics": {
+                    "v_measured": fit.get("v_measured"),
+                    "v_reference": ctx.get("v_reference"),
+                    "v_pct_diff": ctx.get("v_pct_diff"),
+                    "slope": fit.get("slope"),
+                    "intercept": fit.get("intercept"),
+                    "r_squared": fit.get("r_squared"),
+                    "measured_end_effect_cm": ctx.get("measured_end_effect_cm"),
+                    "theory_end_effect_cm": ctx.get("theory_end_effect_cm"),
+                    "f_open_fundamental_Hz": ctx.get("f_open_fundamental_Hz"),
+                    "f_closed_fundamental_Hz": ctx.get("f_closed_fundamental_Hz"),
+                    "open_to_closed_ratio": ctx.get("open_to_closed_ratio"),
+                    "n_closed_lengths": len(ctx.get("closed_summary", [])),
+                },
+                "closed_summary": ctx.get("closed_summary", []),
+                "open_harmonics": ctx.get("open_harmonics", []),
+                "closed_harmonics": ctx.get("closed_harmonics", []),
+                "spacing_rows": ctx.get("spacing_rows", []),
+                "user_resonance_peaks": ctx.get("user_resonance_peaks", []),
+                "plots": {
+                    "L_vs_inv_f": _maybe_png("L_vs_inv_f.png"),
+                    "length_sweep": _maybe_png("length_sweep.png"),
+                    "freq_sweep_user": _maybe_png("freq_sweep_user.png"),
+                    "envelope_user": _maybe_png("envelope_user.png"),
+                    "envelope_open": _maybe_png("envelope_open.png"),
+                    "probe_user": _maybe_png("probe_user.png"),
+                    "open_vs_closed": _maybe_png("open_vs_closed.png"),
+                },
+                "csv": {
+                    "closed_L_vs_f": _maybe_csv("closed_L_vs_f.csv"),
+                    "length_sweep_closed": _maybe_csv("length_sweep_closed.csv"),
+                    "open_freq_sweep": _maybe_csv("open_freq_sweep.csv"),
+                    "closed_freq_sweep": _maybe_csv("closed_freq_sweep.csv"),
+                    "frequency_sweep_user": _maybe_csv("frequency_sweep_user.csv"),
+                },
+                "report_md": _read_b64(report_path),
+                "zip_b64": _read_b64(zip_path),
+                "out_dir": out_dir,
+            }
+
+            if not ws.closed:
+                await ws.send_json({"type": "exp8_report_ready", "data": result})
+            carb.log_warn(f"exp8: full experiment complete → {out_dir}")
+        except Exception as exc:
+            carb.log_error(f"_run_exp8_full_experiment: {exc}")
+            import traceback
+            carb.log_error(traceback.format_exc())
+            if not ws.closed:
+                await ws.send_json({"type": "exp8_progress", "data": {
+                    "phase": f"Error: {exc}", "current": 0, "total": 0,
+                }})
+
     async def _reset_exp8(self):
         """Return every slice to its rest position and clear measurements."""
         await self._stop_exp8_drive()
         self._exp8_reset_fields()
         self.exp8_phase = "idle"
         try:
-            stage = omni.usd.get_context().get_stage()
-            if stage:
-                for i in range(1, EXP8_N_SLICES):
-                    path = EXP8_SLICE_PATH_TEMPLATE.format(i)
-                    prim = stage.GetPrimAtPath(path)
-                    if prim and prim.IsValid():
-                        xf = UsdGeom.Xformable(prim)
-                        xf.ClearXformOpOrder()
-                        xf.AddTranslateOp().Set(self._exp8_slice_rest_pos(i))
-                dia = stage.GetPrimAtPath(EXP8_DIAPHRAGM_PATH)
-                if dia and dia.IsValid():
-                    xf = UsdGeom.Xformable(dia)
-                    xf.ClearXformOpOrder()
-                    xf.AddTranslateOp().Set(Gf.Vec3d(
+            with Sdf.ChangeBlock():
+                for i, op in self._exp8_slice_ops.items():
+                    op.Set(self._exp8_slice_rest_pos(i))
+                if self._exp8_diaphragm_op is not None:
+                    self._exp8_diaphragm_op.Set(Gf.Vec3d(
                         EXP8_TUBE_BASE_X, EXP8_TUBE_Y, EXP8_TUBE_Z,
                     ))
         except Exception as exc:
@@ -4809,14 +6734,113 @@ class WebRTCServer:
                             "phase": self.exp5_phase,
                             "is_running": tl.is_playing(),
                         }}
+                        if tl.is_playing() and self.exp5_phase == "running":
+                            self.exp5_samples.append({
+                                "time_s": float(sim_time),
+                                "timestamp": float(now),
+                                "theta_rad": float(self.exp5_theta),
+                                "theta_deg": float(math.degrees(self.exp5_theta)),
+                                "omega_rad_s": float(self.exp5_omega),
+                                "period_s": float(self.exp5_measured_period),
+                                "period_theory_s": float(T_theory),
+                                "mass_kg": float(self.exp5_m),
+                                "length_m": float(self.exp5_L),
+                                "pivot_distance_m": float(self.exp5_x),
+                                "theta0_deg": float(self.exp5_theta0_deg),
+                                "I_cm_kg_m2": float(I_cm),
+                                "I_pivot_kg_m2": float(I_total),
+                                "x_min_period_m": float(self._exp5_x_min_period()),
+                            })
+                            if len(self.exp5_samples) > 20000:
+                                self.exp5_samples = self.exp5_samples[-20000:]
                     elif self.current_experiment == "6":
-                        fc = self.exp6_mass * self.exp6_radius * self.exp6_angular_velocity ** 2
+                        if tl.is_playing() and self.exp6_scene_built:
+                            x, y, speed, r_actual = self._read_exp6_state()
+                            self.exp6_bob_x = x
+                            self.exp6_bob_y = y
+                            self.exp6_bob_speed = speed
+                            self.exp6_radius_actual = r_actual
+                            # Keep the visual spring rod length in sync
+                            self._exp6_update_spring_visual(r_actual)
+                            sim_time = now - self.exp6_sim_start_time
+                        else:
+                            sim_time = 0.0
+                        r_target = float(self.exp6_radius)
+                        r_actual = float(self.exp6_radius_actual)
+                        extension = r_actual - r_target
+                        # F_measured = real spring force (PhysX integrated r_actual)
+                        F_measured = float(self.exp6_spring_k) * extension
+                        self.exp6_spring_force = F_measured
+                        # F_theory = classic m·ω²·r for comparison
+                        F_theory = self._exp6_force_theory()
+                        # F_kin  = m·v²/r from PhysX-measured speed & radius
+                        F_kin = self._exp6_force_from_kinematics(
+                            r_actual, self.exp6_bob_speed,
+                        )
+                        I = float(self.exp6_mass) * (r_actual ** 2)
+                        ke = 0.5 * float(self.exp6_mass) * (self.exp6_bob_speed ** 2)
+                        omega_crit = (
+                            math.sqrt(float(self.exp6_spring_k)
+                                      / max(1e-9, float(self.exp6_mass)))
+                        )
+                        err_pct = 0.0
+                        if abs(F_theory) > 1e-9:
+                            err_pct = (F_measured - F_theory) / F_theory * 100.0
                         msg = {"type": "telemetry", "data": {
                             "timestamp": now,
-                            "centripetal_force": round(fc, 2),
-                            "tension": round(fc, 2),
+                            # chart keys
+                            "centripetal_force": round(F_measured, 4),
+                            "tension": round(F_measured, 4),
+                            "force_theory": round(F_theory, 4),
+                            "force_kinematic": round(F_kin, 4),
+                            "radius_actual": round(r_actual, 4),
+                            "speed": round(self.exp6_bob_speed, 4),
+                            "omega": round(self.exp6_rotor_omega, 4),
+                            # extra metrics
+                            "mass": round(float(self.exp6_mass), 4),
+                            "radius_target": round(r_target, 4),
+                            "omega_target": round(float(self.exp6_omega), 4),
+                            "omega_critical": round(omega_crit, 3),
+                            "spring_k": round(float(self.exp6_spring_k), 2),
+                            "spring_extension": round(extension, 5),
+                            "force_error_pct": round(err_pct, 2),
+                            "rotor_angle_deg": round(
+                                math.degrees(self.exp6_rotor_angle) % 360.0, 2,
+                            ),
+                            "bob_x": round(self.exp6_bob_x, 4),
+                            "bob_y": round(self.exp6_bob_y, 4),
+                            "inertia": round(I, 6),
+                            "kinetic_energy": round(ke, 6),
+                            "sim_time": round(sim_time, 3),
+                            "phase": self.exp6_phase,
                             "is_running": tl.is_playing(),
                         }}
+                        if tl.is_playing() and self.exp6_phase == "running":
+                            self.exp6_samples.append({
+                                "time_s": float(sim_time),
+                                "timestamp": float(now),
+                                "mass_kg": float(self.exp6_mass),
+                                "radius_target_m": float(r_target),
+                                "radius_actual_m": float(r_actual),
+                                "spring_extension_m": float(extension),
+                                "speed_m_s": float(self.exp6_bob_speed),
+                                "omega_live_rad_s": float(self.exp6_rotor_omega),
+                                "omega_target_rad_s": float(self.exp6_omega),
+                                "force_measured_N": float(F_measured),
+                                "force_theory_N": float(F_theory),
+                                "force_kinematic_N": float(F_kin),
+                                "force_error_pct": float(err_pct),
+                                "spring_k_N_m": float(self.exp6_spring_k),
+                                "damper_N_s_m": float(self.exp6_damper),
+                                "bob_x_m": float(self.exp6_bob_x),
+                                "bob_y_m": float(self.exp6_bob_y),
+                                "rotor_angle_deg": float(
+                                    math.degrees(self.exp6_rotor_angle) % 360.0
+                                ),
+                                "kinetic_energy_J": float(ke),
+                            })
+                            if len(self.exp6_samples) > 20000:
+                                self.exp6_samples = self.exp6_samples[-20000:]
                     elif self.current_experiment == "7":
                         v1x = self._read_exp7_vx(EXP7_CART1_PATH) if tl.is_playing() else 0.0
                         v2x = self._read_exp7_vx(EXP7_CART2_PATH) if tl.is_playing() else 0.0
@@ -4861,12 +6885,50 @@ class WebRTCServer:
                         )
                         msg["data"]["vr"] = vr_info
 
-                    for ws in list(self.ws_clients):
-                        if not ws.closed:
-                            await ws.send_json(msg)
-            except Exception:
-                pass
+                    await self._broadcast_telemetry(msg)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Log at most once every 5s so a sustained failure doesn't
+                # flood the Isaac Sim log, but is never silently swallowed.
+                now_log = time.time()
+                if now_log - self._last_telemetry_log_time > 5.0:
+                    carb.log_error(f"[telemetry] loop error: {exc}")
+                    self._last_telemetry_log_time = now_log
             await asyncio.sleep(TELEMETRY_BROADCAST_INTERVAL)
+
+    async def _broadcast_telemetry(self, msg: dict) -> None:
+        """Fan-out a telemetry frame to every connected client in parallel.
+
+        Each per-client send is wrapped in `wait_for(0.5s)` so a single slow /
+        half-open TCP socket can never head-of-line block the whole broadcast.
+        Slow or failing clients are removed from the active set.
+        """
+        if not self.ws_clients:
+            return
+        # Snapshot the set so concurrent connect/disconnect doesn't break iteration.
+        clients = [w for w in list(self.ws_clients) if not w.closed]
+        if not clients:
+            return
+
+        async def _send_one(ws):
+            try:
+                await asyncio.wait_for(ws.send_json(msg), timeout=0.5)
+                return None
+            except (asyncio.TimeoutError, ConnectionResetError, RuntimeError):
+                return ws
+            except Exception:
+                return ws
+
+        results = await asyncio.gather(*(_send_one(ws) for ws in clients), return_exceptions=False)
+        for failed in results:
+            if failed is not None:
+                self.ws_clients.discard(failed)
+                try:
+                    if not failed.closed:
+                        await failed.close()
+                except Exception:
+                    pass
 
     # --- WebSocket JPEG video fallback (works through SSH tunnels) ---------
 
@@ -4876,24 +6938,48 @@ class WebRTCServer:
         Used as a fallback when WebRTC ICE cannot connect (e.g. SSH tunnel).
         Lower quality/fps than WebRTC but works over any TCP proxy.
         """
-        ws = web.WebSocketResponse()
+        # autoping/heartbeat keeps proxies & corp firewalls from killing the
+        # idle TCP connection; receive_timeout=None lets the browser close
+        # cleanly on tab navigation without us thrashing.
+        ws = web.WebSocketResponse(heartbeat=15.0, autoping=True, receive_timeout=None)
         await ws.prepare(request)
-        carb.log_warn("WS video feed client connected")
+        carb.log_info("[ws-jpeg] client connected")
 
         capture = _SharedFrameCapture.instance()
+        consecutive_failures = 0
         try:
             while not ws.closed:
-                jpeg_bytes = await capture.grab_jpeg(
-                    width=1920, height=1080, quality=80
-                )
+                try:
+                    jpeg_bytes = await asyncio.wait_for(
+                        capture.grab_jpeg(width=1920, height=1080, quality=80),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    jpeg_bytes = None
                 if jpeg_bytes:
-                    await ws.send_bytes(jpeg_bytes)
-                await asyncio.sleep(1.0 / 24)  # ~24 fps
+                    consecutive_failures = 0
+                    try:
+                        await asyncio.wait_for(ws.send_bytes(jpeg_bytes), timeout=2.0)
+                    except (asyncio.TimeoutError, ConnectionResetError):
+                        break
+                else:
+                    consecutive_failures += 1
+                    if consecutive_failures % 30 == 0:
+                        carb.log_warn(
+                            f"[ws-jpeg] {consecutive_failures} consecutive empty captures"
+                        )
+                await asyncio.sleep(1.0 / 24)  # ~24 fps target
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         except Exception as exc:
-            carb.log_error(f"video_feed error: {exc}")
-        carb.log_warn("WS video feed client disconnected")
+            carb.log_error(f"[ws-jpeg] error: {exc}")
+        finally:
+            try:
+                if not ws.closed:
+                    await ws.close()
+            except Exception:
+                pass
+        carb.log_info("[ws-jpeg] client disconnected")
         return ws
 
     # --- Lifecycle ---------------------------------------------------------
@@ -4933,6 +7019,7 @@ class WebRTCServer:
         await self._ws_site.start()
 
         self._monitor_task = asyncio.ensure_future(self._telemetry_loop())
+        self._dead_client_sweeper_task = asyncio.ensure_future(self._dead_client_sweeper())
 
         # Start VR hand tracking receiver
         if self.vr_bridge.enabled:
@@ -4943,9 +7030,40 @@ class WebRTCServer:
             f"Server started — HTTP :{self.http_port}  WS :{self.ws_port}  IP {HOST_IP}"
         )
 
+    async def _dead_client_sweeper(self) -> None:
+        """Periodically prune ws_clients whose underlying transport is closed.
+
+        aiohttp will sometimes leave a `WebSocketResponse` in the set even
+        after the peer has gone away (heartbeat handles most cases, but a
+        crashed browser tab on bad networks can still leak).
+        """
+        while True:
+            try:
+                await asyncio.sleep(15.0)
+                stale = [w for w in list(self.ws_clients) if w.closed]
+                for w in stale:
+                    self.ws_clients.discard(w)
+                if stale:
+                    carb.log_info(f"[ws] swept {len(stale)} stale clients (alive={len(self.ws_clients)})")
+                # Also prune dead WebRTC peers.
+                dead_pcs = [pc for pc in list(self.pcs)
+                            if pc.connectionState in ("failed", "closed")]
+                for pc in dead_pcs:
+                    self.pcs.discard(pc)
+                    try:
+                        await pc.close()
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                carb.log_warn(f"[ws-sweeper] {exc}")
+
     async def stop(self):
         if self._monitor_task:
             self._monitor_task.cancel()
+        if self._dead_client_sweeper_task:
+            self._dead_client_sweeper_task.cancel()
         if self.vr_bridge.enabled:
             self.vr_bridge.stop()
         if hasattr(self, "_http_site"):

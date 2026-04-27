@@ -6,9 +6,15 @@ import { ConnectionStatus, type TelemetryData, type ExperimentConfig } from '../
 import WebRTCIsaacViewer from './WebRTCIsaacViewer';
 import { SERVER_CONFIG } from '../config';
 import { pdf } from '@react-pdf/renderer';
-import LabReportPDF from './LabReportPDF';
+import Exp1ReportPDF from './Exp1ReportPDF';
 import Exp7ReportPDF, { type Exp7Trial } from './Exp7ReportPDF';
+import Exp2ReportPDF, { type Exp2ReportData } from './Exp2ReportPDF';
+import Exp5ReportPDF, { type Exp5ReportData } from './Exp5ReportPDF';
+import Exp3ReportPDF, { type Exp3Trial } from './Exp3ReportPDF';
+import Exp6ReportPDF, { type Exp6ReportData as Exp6PrettyReportData } from './Exp6ReportPDF';
+import Exp4ReportPDF, { type Exp4ReportData as Exp4PrettyReportData } from './Exp4ReportPDF';
 import { generateExp7Charts } from '../utils/exp7Charts';
+import { generateExp3Charts } from '../utils/exp3Charts';
 import { renderTrialChart } from '../utils/renderTrialChart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -62,6 +68,32 @@ interface ExperimentViewProps {
   onBack: () => void;
 }
 
+interface ServerReportData {
+  summary?: Record<string, number | string>;
+  pdf_b64?: string;
+  csv_b64?: string;
+  period_csv_b64?: string;
+  report_md?: string;
+  zip_b64?: string;
+  files?: Record<string, string>;
+  plots?: Record<string, string> | Exp6PrettyReportData['plots'];
+  period_rows?: Array<Record<string, number>>;
+}
+
+type Exp4ReportData = Exp4PrettyReportData;
+
+function downloadBase64File(b64: string, filename: string, mimeType: string) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  const blob = new Blob([arr], { type: mimeType });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Main Component
 // ═══════════════════════════════════════════════════════════════════════
@@ -79,8 +111,12 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const latestData = useRef<TelemetryData | null>(null);
 
   const isExp1 = config.experimentNumber === '1';
+  const isExp3 = config.experimentNumber === '3';
+  const isExp5 = config.experimentNumber === '5';
+  const isExp6 = config.experimentNumber === '6';
   const isExp7 = config.experimentNumber === '7';
   const isConnected = status === ConnectionStatus.CONNECTED;
+  const isReconnecting = status === ConnectionStatus.RECONNECTING || status === ConnectionStatus.CONNECTING;
 
   // ── Exp1: 4-trial state machine ──
   const [trialNum, setTrialNum] = useState(1);
@@ -91,8 +127,8 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const [currentOffset, setCurrentOffset] = useState(0);
   const [spinCountdown, setSpinCountdown] = useState(0);
   const [selectedObject, setSelectedObject] = useState<DroppedObject>('Ring');
-  const [ringMass, setRingMass] = useState(PHYS.ring.mass);
-  const [diskMass, setDiskMass] = useState(PHYS.upperDisk.mass);
+  const [ringMass, setRingMass] = useState<number>(PHYS.ring.mass);
+  const [diskMass, setDiskMass] = useState<number>(PHYS.upperDisk.mass);
   const [massLocked, setMassLocked] = useState(false);
   const allDone = trials.length >= 4;
 
@@ -111,10 +147,43 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const [exp7PostV2, setExp7PostV2] = useState(0);
   const exp7AllDone = exp7Trials.length >= 4;
 
+  // ── Exp3: 5-trial state machine (Ballistic Pendulum) ──
+  const EXP3_TARGET_TRIALS = 5;
+  const [exp3Trial, setExp3Trial] = useState(1);
+  const [exp3Phase, setExp3Phase] = useState<'idle' | 'firing' | 'swinging' | 'settled' | 'recorded'>('idle');
+  const [exp3Trials, setExp3Trials] = useState<Exp3Trial[]>([]);
+  const [exp3BallMass, setExp3BallMass] = useState(0.0165);
+  const [exp3PendMass, setExp3PendMass] = useState(0.1536);
+  const [exp3V0, setExp3V0] = useState(5.0);
+  const [exp3L, setExp3L] = useState(0.30);
+  const [exp3ImpactT, setExp3ImpactT] = useState<number | null>(null);
+  const [exp3ApexT, setExp3ApexT] = useState<number | null>(null);
+  const [exp3ThetaSeries, setExp3ThetaSeries] = useState<{ t: number; theta: number }[]>([]);
+  const [exp3LiveThetaMax, setExp3LiveThetaMax] = useState(0);
+  const [exp3LiveV0Meas, setExp3LiveV0Meas] = useState(0);
+  const exp3AllDone = exp3Trials.length >= EXP3_TARGET_TRIALS;
+
   // ── Exp2: report generation state ──
   const isExp2 = config.experimentNumber === '2';
   const [exp2Progress, setExp2Progress] = useState<string>('');
-  const [exp2ReportData, setExp2ReportData] = useState<any>(null);
+  const [exp2ReportData, setExp2ReportData] = useState<Exp2ReportData | null>(null);
+
+  // ── Exp6: server-side Python report generation state ──
+  const [exp5Progress, setExp5Progress] = useState<string>('');
+  const [exp5ReportData, setExp5ReportData] = useState<ServerReportData | null>(null);
+  const [exp5ExportStartedAt, setExp5ExportStartedAt] = useState<number | null>(null);
+  const [exp6Progress, setExp6Progress] = useState<string>('');
+  const [exp6ReportData, setExp6ReportData] = useState<ServerReportData | null>(null);
+
+  // ── Exp4: driven-damped lab-report state (Python plots + Markdown + ZIP) ──
+  const isExp4 = config.experimentNumber === '4';
+  const [exp4Progress, setExp4Progress] = useState<string>('');
+  const [exp4ReportData, setExp4ReportData] = useState<Exp4ReportData | null>(null);
+
+  // ── Exp8: resonance-air-column lab report (Python plots + Markdown + ZIP) ──
+  const isExp8 = config.experimentNumber === '8';
+  const [exp8Progress, setExp8Progress] = useState<string>('');
+  const [exp8ReportData, setExp8ReportData] = useState<any>(null);
 
   // ── VR hand tracking ──
   const [vrConnected, setVrConnected] = useState(false);
@@ -176,8 +245,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
 
     const unsub1 = isaacService.onTelemetry((data) => {
       latestData.current = data;
-      if (data.vr && typeof data.vr === 'object') {
-        setVrConnected(!!data.vr.vr_connected);
+      const vrData = (data as any).vr;
+      if (vrData && typeof vrData === 'object') {
+        setVrConnected(!!vrData.vr_connected);
       }
       const clamped = { ...data };
       for (const k of Object.keys(clamped)) {
@@ -189,10 +259,62 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
         const next = [...prev, clamped];
         return next.length > 300 ? next.slice(-300) : next;
       });
-      if (isExp7 && data.phase === 'settled') {
-        setExp7PostV1(data.v1_final ?? data.v1 ?? 0);
-        setExp7PostV2(data.v2_final ?? data.v2 ?? 0);
+      if (isExp7 && (data as any).phase === 'settled') {
+        setExp7PostV1((data as any).v1_final ?? (data as any).v1 ?? 0);
+        setExp7PostV2((data as any).v2_final ?? (data as any).v2 ?? 0);
         setExp7Phase(prev => prev === 'running' ? 'settled' : prev);
+      }
+      if (isExp3) {
+        const serverPhase = (data as any).phase as string | undefined;
+        const simT = typeof (data as any).sim_time === 'number' ? (data as any).sim_time : 0;
+        const thetaDeg = typeof (data as any).theta === 'number' ? (data as any).theta : 0;
+        const thetaMaxDeg = typeof (data as any).theta_max === 'number' ? (data as any).theta_max : 0;
+        const v0Meas = typeof (data as any).v0_measured === 'number' ? (data as any).v0_measured : 0;
+
+        setExp3LiveThetaMax(prev => Math.max(prev, Math.abs(thetaMaxDeg)));
+        if (v0Meas > 0) setExp3LiveV0Meas(v0Meas);
+
+        if (serverPhase === 'firing' || serverPhase === 'swinging') {
+          if (simT >= 0 && simT < 30) {
+            setExp3ThetaSeries(prev => {
+              if (prev.length > 0 && simT - prev[prev.length - 1].t < 0.005) return prev;
+              const next = [...prev, { t: +simT.toFixed(3), theta: +thetaDeg.toFixed(4) }];
+              return next.length > 800 ? next.slice(-800) : next;
+            });
+          }
+        }
+        if (serverPhase === 'swinging' && Math.abs(thetaDeg) > 1.5) {
+          setExp3ImpactT(prev => prev === null ? simT : prev);
+        }
+        if (serverPhase === 'settled') {
+          setExp3ApexT(prev => prev === null ? simT : prev);
+        }
+        // Phase sync rules — order matters and the guards are deliberate.
+        //
+        // BUG WE'RE GUARDING AGAINST (deterministic, alternating):
+        //   Trial N: Fire → settled → Record → click "Next Trial".
+        //   The frontend handler for Next Trial sets exp3Phase = 'idle'
+        //   *immediately*, then sends `exp3_soft_reset`.  But the backend
+        //   is still emitting telemetry at ~30 Hz with phase='settled'
+        //   from the PREVIOUS trial during the ~50 ms it takes for the
+        //   reset message to be processed.  If we let those stale
+        //   packets upgrade 'idle' → 'settled', the user sees Fire
+        //   disabled and only Record clickable on the next trial.
+        //
+        // Rule: only advance the phase forward when the frontend is
+        // already in a state that EXPECTS that advance.  'idle' and
+        // 'recorded' are user-controlled checkpoints — telemetry must
+        // never overwrite them.
+        if (serverPhase === 'swinging') {
+          setExp3Phase(prev => prev === 'firing' ? 'swinging' : prev);
+        } else if (serverPhase === 'settled') {
+          setExp3Phase(prev => (prev === 'firing' || prev === 'swinging') ? 'settled' : prev);
+        }
+        // serverPhase === 'firing' is intentionally unhandled: the local
+        // exp3HandleFire already sets exp3Phase='firing' before calling
+        // start_simulation, so there is no scenario where the server
+        // legitimately transitions us into 'firing' while the frontend
+        // is still 'idle'.
       }
     });
     const unsub2 = isaacService.onSimulationState(setSimState);
@@ -202,11 +324,144 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       } else if (msg.type === 'exp2_report_ready' && msg.data) {
         setExp2ReportData(msg.data);
         setExp2Progress('Report ready!');
+      } else if (msg.type === 'exp8_progress' && msg.data) {
+        const total = Number(msg.data.total ?? 0);
+        const current = Number(msg.data.current ?? 0);
+        const suffix = total > 0 ? ` (${current}/${total})` : '';
+        setExp8Progress(`${msg.data.phase}${suffix}`);
+      } else if (msg.type === 'exp8_report_ready' && msg.data) {
+        setExp8ReportData(msg.data);
+        setExp8Progress('Report ready!');
+      } else if (msg.type === 'exp5_report_progress' && msg.data) {
+        const total = Number(msg.data.total ?? 0);
+        const current = Number(msg.data.current ?? 0);
+        const suffix = total > 0 ? ` (${current}/${total})` : '';
+        setExp5Progress(`${msg.data.phase}${suffix}`);
+        if (total === 0 || String(msg.data.phase ?? '').toLowerCase().includes('error')) {
+          setExp5ExportStartedAt(null);
+        }
+      } else if (msg.type === 'exp5_report_ready' && msg.data) {
+        const data = msg.data as ServerReportData;
+        setExp5ReportData(data);
+        setExp5Progress('Rendering PDF in your browser...');
+        setExp5ExportStartedAt(null);
+        // Render the formal PHY1002 lab report PDF in the browser using
+        // @react-pdf/renderer (same toolchain as Exp1) so the layout
+        // exactly matches Lab Report 1. The server only provides the
+        // summary data and matplotlib PNG figures embedded as base64.
+        if (data.summary && data.plots) {
+          (async () => {
+            try {
+              const blob = await pdf(
+                <Exp5ReportPDF
+                  data={{
+                    summary: data.summary as unknown as Exp5ReportData['summary'],
+                    period_rows: (data.period_rows ?? []) as unknown as Exp5ReportData['period_rows'],
+                    plots: data.plots as unknown as Exp5ReportData['plots'],
+                  }}
+                />,
+              ).toBlob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'Lab_Report_Rotational_Inertia_Physical_Pendulum.pdf';
+              a.click();
+              URL.revokeObjectURL(url);
+              setExp5Progress('Report ready!');
+            } catch (err) {
+              console.error('Exp5 PDF render failed', err);
+              setExp5Progress(`Report ready, but PDF rendering failed: ${(err as Error).message ?? 'unknown error'}. Use Markdown or ZIP downloads below.`);
+            }
+          })();
+        } else {
+          setExp5Progress('Report ready!');
+        }
+      } else if (msg.type === 'exp6_report_progress' && msg.data) {
+        const total = Number(msg.data.total ?? 0);
+        const current = Number(msg.data.current ?? 0);
+        const suffix = total > 0 ? ` (${current}/${total})` : '';
+        setExp6Progress(`${msg.data.phase}${suffix}`);
+      } else if (msg.type === 'exp6_report_ready' && msg.data) {
+        const data = msg.data as ServerReportData;
+        setExp6ReportData(data);
+        setExp6Progress('Report ready!');
+        (async () => {
+          const blob = await pdf(<Exp6ReportPDF data={data as Exp6PrettyReportData} />).toBlob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'Lab_Report_Centripetal_Force.pdf';
+          a.click();
+          URL.revokeObjectURL(url);
+        })().catch((err) => {
+          console.error('Failed to render styled Exp6 PDF; falling back to backend PDF.', err);
+          if (data.pdf_b64) {
+            downloadBase64File(
+              data.pdf_b64,
+              data.files?.pdf || 'Lab_Report_Centripetal_Force_backend.pdf',
+              'application/pdf',
+            );
+          }
+        });
+      } else if (msg.type === 'exp4_progress' && msg.data) {
+        const total = Number(msg.data.total ?? 0);
+        const current = Number(msg.data.current ?? 0);
+        const suffix = total > 0 ? ` (${current}/${total})` : '';
+        setExp4Progress(`${msg.data.phase}${suffix}`);
+      } else if (msg.type === 'exp4_report_ready' && msg.data) {
+        setExp4ReportData(msg.data as Exp4ReportData);
+        setExp4Progress('Report ready!');
       }
     });
     const poll = setInterval(() => { if (isaacService.isConnected()) isaacService.requestSimulationState(); }, 3000);
-    return () => { unsub1(); unsub2(); unsub3(); clearInterval(poll); };
+
+    // Live status subscription so the UI badge reflects RECONNECTING and we
+    // re-apply per-experiment parameter defaults after the socket comes back.
+    let lastStatus: ConnectionStatus = isaacService.getStatus();
+    const unsub4 = isaacService.onStatusChange((s) => {
+      setStatus(s);
+      const wasDown = lastStatus !== ConnectionStatus.CONNECTED;
+      lastStatus = s;
+      if (s === ConnectionStatus.CONNECTED && wasDown) {
+        // Reconnected after a drop — re-issue experiment defaults so the
+        // backend doesn't drift out of sync with the UI sliders.
+        try {
+          isaacService.enterExperiment(config.experimentNumber);
+          if (config.experimentNumber === '1') {
+            isaacService.sendCommand('set_drop_object', 'ring');
+          }
+          if (config.experimentNumber === '7') {
+            isaacService.sendCommand('set_mass1', exp7M1);
+            isaacService.sendCommand('set_mass2', exp7M2);
+            isaacService.sendCommand('set_velocity1', exp7V1);
+            isaacService.sendCommand('set_velocity2', exp7V2);
+            isaacService.sendCommand('set_elasticity', exp7Rest);
+          }
+          // Re-apply current slider values for any experiment.
+          Object.entries(controlValues).forEach(([id, value]) => {
+            const ctl = config.controls?.find(c => c.id === id);
+            const cmd = (ctl as any)?.command;
+            if (cmd) isaacService.sendCommand(cmd, value);
+          });
+        } catch (e) {
+          console.warn('post-reconnect resync failed', e);
+        }
+      }
+    });
+
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); clearInterval(poll); };
   }, [config.id, config.experimentNumber]);
+
+  useEffect(() => {
+    if (!isExp5 || exp5ExportStartedAt === null || exp5ReportData) return;
+    const timer = window.setTimeout(() => {
+      setExp5Progress(
+        'No response from backend. Restart services with ./launch.sh --all so Isaac Sim reloads the latest report code, then run the pendulum again.',
+      );
+      setExp5ExportStartedAt(null);
+    }, 30000);
+    return () => window.clearTimeout(timer);
+  }, [isExp5, exp5ExportStartedAt, exp5ReportData]);
 
   // ── Spin countdown ──
   useEffect(() => {
@@ -360,6 +615,124 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   }, [exp7Trials]);
 
   // ═══════════════════════════════════════════════════════════════════
+  // Module 2c — Exp3 5-Trial State Machine Actions (Ballistic Pendulum)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const exp3HandleFire = useCallback(() => {
+    isaacService.sendCommand('set_ball_mass', exp3BallMass);
+    isaacService.sendCommand('set_pend_mass', exp3PendMass);
+    isaacService.sendCommand('set_exp3_v0', exp3V0);
+    isaacService.sendCommand('set_exp3_L', exp3L);
+    setExp3ThetaSeries([]);
+    setExp3ImpactT(null);
+    setExp3ApexT(null);
+    setExp3LiveThetaMax(0);
+    setExp3LiveV0Meas(0);
+    setDataHistory([]);
+    setExp3Phase('firing');
+    // Small delay so server applies parameter updates before play begins.
+    setTimeout(() => isaacService.startSimulation(), 80);
+  }, [exp3BallMass, exp3PendMass, exp3V0, exp3L]);
+
+  const exp3HandleRecord = useCallback(() => {
+    const latest = latestData.current as any;
+    const G = 9.80665;
+    const ball_mass = exp3BallMass;
+    const pend_mass = exp3PendMass;
+    const M = ball_mass + pend_mass;
+    const L = exp3L;
+
+    // Prefer fresh server values; fall back to live tracker.
+    const theta_max_deg = typeof latest?.theta_max === 'number' && latest.theta_max > 0
+      ? latest.theta_max : exp3LiveThetaMax;
+    const v_after_ideal = (ball_mass * exp3V0) / (M > 1e-9 ? M : 1);
+    const theta_max_rad = (theta_max_deg * Math.PI) / 180;
+    const h_max = L * (1 - Math.cos(theta_max_rad));
+    const v0_measured = ball_mass > 1e-9
+      ? (M / ball_mass) * Math.sqrt(2 * G * Math.max(h_max, 0))
+      : 0;
+    const v0_error_pct = exp3V0 > 1e-9 ? ((v0_measured - exp3V0) / exp3V0) * 100 : 0;
+    const ke_input = 0.5 * ball_mass * exp3V0 * exp3V0;
+    const ke_after_ideal = 0.5 * M * v_after_ideal * v_after_ideal;
+    const ke_loss_percent = ke_input > 1e-12 ? ((ke_input - ke_after_ideal) / ke_input) * 100 : 0;
+
+    const trial: Exp3Trial = {
+      trial: exp3Trial,
+      ball_mass, pend_mass, L,
+      v0_input: exp3V0,
+      theta_max_deg: +theta_max_deg.toFixed(4),
+      h_max: +h_max.toFixed(6),
+      v_after_ideal: +v_after_ideal.toFixed(6),
+      v0_measured: +v0_measured.toFixed(4),
+      v0_error_pct: +v0_error_pct.toFixed(3),
+      ke_input: +ke_input.toFixed(6),
+      ke_after_ideal: +ke_after_ideal.toFixed(6),
+      ke_loss_percent: +ke_loss_percent.toFixed(3),
+      apex_time: exp3ApexT ?? undefined,
+      impact_time: exp3ImpactT ?? undefined,
+      thetaSeries: exp3ThetaSeries.slice(),
+    };
+
+    setExp3Trials(prev => [...prev, trial]);
+    setExp3Phase('recorded');
+  }, [exp3Trial, exp3BallMass, exp3PendMass, exp3V0, exp3L,
+      exp3LiveThetaMax, exp3ApexT, exp3ImpactT, exp3ThetaSeries]);
+
+  const exp3HandleNext = useCallback(() => {
+    // Use the lightweight `exp3_soft_reset` instead of the global `reset`.
+    // The global path stops the timeline four times in rapid succession
+    // (each call briefly tears down Hydra), which starves the WebRTC ICE
+    // keepalive and causes the browser to flag the video as disconnected.
+    // The next `Fire` performs its own full reset (stop + pose + play)
+    // anyway, so we only need to clear UI / measurement state here.
+    isaacService.sendCommand('exp3_soft_reset', {});
+    setExp3Trial(prev => Math.min(prev + 1, EXP3_TARGET_TRIALS));
+    setExp3Phase('idle');
+    setExp3ThetaSeries([]);
+    setExp3ImpactT(null);
+    setExp3ApexT(null);
+    setExp3LiveThetaMax(0);
+    setExp3LiveV0Meas(0);
+    setDataHistory([]);
+  }, []);
+
+  const exp3ExportCSV = useCallback(() => {
+    if (exp3Trials.length === 0) return;
+    const hdr = 'Trial,m_ball(kg),m_pend(kg),L(m),v0_set(m/s),theta_max(deg),h_max(m),v_after(m/s),v0_measured(m/s),%diff,KE_in(J),KE_after(J),KE_loss(%),t_impact(s),t_apex(s)';
+    const rows = exp3Trials.map(t =>
+      [t.trial,
+       t.ball_mass.toFixed(4), t.pend_mass.toFixed(4), t.L.toFixed(3), t.v0_input.toFixed(3),
+       t.theta_max_deg.toFixed(3), t.h_max.toFixed(5),
+       t.v_after_ideal.toFixed(4), t.v0_measured.toFixed(4),
+       t.v0_error_pct.toFixed(3),
+       t.ke_input.toFixed(5), t.ke_after_ideal.toFixed(5), t.ke_loss_percent.toFixed(3),
+       (t.impact_time ?? '').toString(), (t.apex_time ?? '').toString()
+      ].join(',')
+    );
+    const blob = new Blob([[hdr, ...rows].join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `ballistic_pendulum_trials_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, [exp3Trials]);
+
+  const exp3GeneratePDF = useCallback(async () => {
+    if (exp3Trials.length === 0) {
+      alert('Complete at least one trial before exporting the report.');
+      return;
+    }
+    const charts = generateExp3Charts(exp3Trials);
+    const blob = await pdf(<Exp3ReportPDF trials={exp3Trials} charts={charts} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Ballistic_Pendulum.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp3Trials]);
+
+  // ═══════════════════════════════════════════════════════════════════
   // Module 3 — CSV Export
   // ═══════════════════════════════════════════════════════════════════
 
@@ -399,7 +772,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     });
 
     const blob = await pdf(
-      <LabReportPDF phys={PHYS} iri={IRI} trials={trials} chartImages={chartImages} />
+      <Exp1ReportPDF phys={PHYS} iri={IRI} trials={trials} chartImages={chartImages} />
     ).toBlob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -408,6 +781,49 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     a.click();
     URL.revokeObjectURL(url);
   }, [trials]);
+
+  const exp2GeneratePDF = useCallback(async () => {
+    if (!exp2ReportData) {
+      alert('Run "Generate Full Report" first, then export the PDF after the report data is ready.');
+      return;
+    }
+
+    const blob = await pdf(<Exp2ReportPDF data={exp2ReportData} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Large_Amplitude_Pendulum.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp2ReportData]);
+
+  const exp6GeneratePrettyPDF = useCallback(async () => {
+    if (!exp6ReportData) {
+      alert('Run "Export Lab Report (PDF)" first, then download the report after it is ready.');
+      return;
+    }
+    const blob = await pdf(<Exp6ReportPDF data={exp6ReportData as Exp6PrettyReportData} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Centripetal_Force.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp6ReportData]);
+
+  const exp4GeneratePrettyPDF = useCallback(async () => {
+    if (!exp4ReportData) {
+      alert('Click "Generate Lab Report" first, then download the PDF after the report data is ready.');
+      return;
+    }
+    const blob = await pdf(<Exp4ReportPDF data={exp4ReportData as Exp4PrettyReportData} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Driven_Damped_Oscillator.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp4ReportData]);
 
   // ═══════════════════════════════════════════════════════════════════
   // Generic experiment handler (non-exp1)
@@ -422,10 +838,48 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       isaacService.startSimulation();
     } else if (control.command === 'reset_env' || control.command === 'reset') {
       isaacService.sendCommand('reset', {});
+      if (isExp4) {
+        setExp4Progress('');
+        setExp4ReportData(null);
+      }
+      if (isExp5) {
+        setExp5Progress('');
+        setExp5ReportData(null);
+        setExp5ExportStartedAt(null);
+      }
+      if (isExp6) {
+        setExp6Progress('');
+        setExp6ReportData(null);
+      }
+      if (isExp8) {
+        setExp8Progress('');
+        setExp8ReportData(null);
+      }
+    } else if (control.command === 'run_exp2_full_experiment') {
+      setExp2ReportData(null);
+      setExp2Progress('Starting report generation...');
+      isaacService.sendCommand(control.command, value);
+    } else if (control.command === 'run_exp8_full_experiment') {
+      setExp8ReportData(null);
+      setExp8Progress('Starting Python report pipeline (~2 min)...');
+      isaacService.sendCommand(control.command, true);
+    } else if (control.command === 'run_exp4_full_experiment') {
+      setExp4ReportData(null);
+      setExp4Progress('Starting Python report pipeline...');
+      isaacService.sendCommand(control.command, true);
+    } else if (control.command === 'export_exp5_report' || control.command === 'run_exp5_report') {
+      setExp5ReportData(null);
+      setExp5Progress('Starting Python report generation...');
+      setExp5ExportStartedAt(Date.now());
+      isaacService.sendCommand(control.command, true);
+    } else if (control.command === 'export_exp6_report') {
+      setExp6ReportData(null);
+      setExp6Progress('Starting Python report generation...');
+      isaacService.sendCommand(control.command, true);
     } else {
       isaacService.sendCommand(control.command, value);
     }
-  }, [config.controls]);
+  }, [config.controls, isExp4, isExp5, isExp6]);
 
   // ═══════════════════════════════════════════════════════════════════
   // Loading screen
@@ -490,9 +944,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono rounded-lg flex items-center gap-1 disabled:opacity-40">
               <FileText size={11} /> PDF Report
             </button>
-            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-              {isConnected ? 'LIVE' : 'OFF'}
+            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : isReconnecting ? 'border-yellow-400 text-yellow-700 bg-yellow-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isReconnecting ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+              {isConnected ? 'LIVE' : isReconnecting ? 'REC...' : 'OFF'}
             </div>
             {vrConnected && (
               <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
@@ -824,9 +1278,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
               className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono rounded-lg flex items-center gap-1 disabled:opacity-40">
               <FileText size={11} /> PDF Report
             </button>
-            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-              {isConnected ? 'LIVE' : 'OFF'}
+            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : isReconnecting ? 'border-yellow-400 text-yellow-700 bg-yellow-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isReconnecting ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+              {isConnected ? 'LIVE' : isReconnecting ? 'REC...' : 'OFF'}
             </div>
             {vrConnected && (
               <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
@@ -1071,6 +1525,266 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   }
 
   // ═══════════════════════════════════════════════════════════════════
+  // Experiment 3: Ballistic Pendulum — specialised 5-trial layout
+  // ═══════════════════════════════════════════════════════════════════
+
+  if (isExp3) {
+    const M_total = exp3BallMass + exp3PendMass;
+    const exp3PhaseSteps = ['idle', 'firing', 'swinging', 'settled', 'recorded'] as const;
+    const stepLabel = (s: typeof exp3PhaseSteps[number]) =>
+      s === 'idle' ? 'Setup' :
+      s === 'firing' ? 'Firing' :
+      s === 'swinging' ? 'Swinging' :
+      s === 'settled' ? 'Apex' : 'Recorded';
+
+    return (
+      <div className="h-screen w-full bg-gray-50 text-gray-900 flex flex-col font-sans overflow-hidden">
+        {/* Top Bar */}
+        <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-white/90 backdrop-blur-sm z-20 shadow-sm shrink-0">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="text-gray-700 hover:text-blue-600 flex items-center gap-1.5 text-xs font-mono border border-gray-300 px-2.5 py-1 rounded-lg">
+              <ArrowLeft size={12} /> BACK
+            </button>
+            <div className="h-5 w-px bg-gray-300" />
+            <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-gray-500 bg-gray-100 px-2 py-1 rounded-lg border">
+              Trial {Math.min(exp3Trial, EXP3_TARGET_TRIALS)} / {EXP3_TARGET_TRIALS}
+            </span>
+            <button onClick={exp3ExportCSV} disabled={exp3Trials.length === 0}
+              className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-mono rounded-lg flex items-center gap-1 border border-gray-300 disabled:opacity-40">
+              <Download size={11} /> CSV
+            </button>
+            <button onClick={exp3GeneratePDF} disabled={exp3Trials.length === 0}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-mono rounded-lg flex items-center gap-1 disabled:opacity-40">
+              <FileText size={11} /> PDF Report
+            </button>
+            <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : isReconnecting ? 'border-yellow-400 text-yellow-700 bg-yellow-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isReconnecting ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+              {isConnected ? 'LIVE' : isReconnecting ? 'REC...' : 'OFF'}
+            </div>
+            {vrConnected && (
+              <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
+                <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+                VR
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Main */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left Panel — controls */}
+          <div className="w-[300px] bg-white border-r border-gray-200 flex flex-col shrink-0 overflow-y-auto">
+            {/* Setup parameters */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Projectile</div>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Ball mass m_ball</span>
+                    <span className="font-bold text-amber-600">{(exp3BallMass * 1000).toFixed(1)} g</span>
+                  </div>
+                  <input type="range" min={0.005} max={0.100} step={0.001} value={exp3BallMass}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp3BallMass(v); isaacService.sendCommand('set_ball_mass', v); }}
+                    disabled={exp3Phase !== 'idle' && exp3Phase !== 'recorded'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-500 disabled:opacity-50" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">v₀ launcher</span>
+                    <span className="font-bold text-amber-600">{exp3V0.toFixed(2)} m/s</span>
+                  </div>
+                  <input type="range" min={1.0} max={8.0} step={0.1} value={exp3V0}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp3V0(v); isaacService.sendCommand('set_exp3_v0', v); }}
+                    disabled={exp3Phase !== 'idle' && exp3Phase !== 'recorded'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-amber-500 disabled:opacity-50" />
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 border-b border-gray-200">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Pendulum</div>
+              <div className="space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Catcher mass m_pend</span>
+                    <span className="font-bold text-purple-600">{(exp3PendMass * 1000).toFixed(1)} g</span>
+                  </div>
+                  <input type="range" min={0.050} max={0.500} step={0.005} value={exp3PendMass}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp3PendMass(v); isaacService.sendCommand('set_pend_mass', v); }}
+                    disabled={exp3Phase !== 'idle' && exp3Phase !== 'recorded'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-500 disabled:opacity-50" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] font-mono mb-0.5">
+                    <span className="text-gray-600">Rod length L</span>
+                    <span className="font-bold text-purple-600">{(exp3L * 100).toFixed(1)} cm</span>
+                  </div>
+                  <input type="range" min={0.15} max={0.50} step={0.01} value={exp3L}
+                    onChange={e => { const v = parseFloat(e.target.value); setExp3L(v); isaacService.sendCommand('set_exp3_L', v); }}
+                    disabled={exp3Phase !== 'idle' && exp3Phase !== 'recorded'}
+                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-500 disabled:opacity-50" />
+                </div>
+              </div>
+            </div>
+
+            {/* Live trial info */}
+            <div className="p-3 border-b border-gray-200 bg-gradient-to-b from-blue-50/50 to-white">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-2">Current Trial</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <InfoCard label="Trial" value={`${Math.min(exp3Trial, EXP3_TARGET_TRIALS)} / ${EXP3_TARGET_TRIALS}`} accent="blue" />
+                <InfoCard label="Phase" value={exp3Phase.toUpperCase()} accent="green" />
+                <InfoCard label="M total" value={`${(M_total * 1000).toFixed(1)} g`} accent="gray" />
+                <InfoCard label="m/M" value={`${((exp3BallMass / M_total) * 100).toFixed(1)} %`} accent="amber" />
+                <InfoCard label="θ max" value={`${exp3LiveThetaMax.toFixed(2)}°`} accent="red" />
+                <InfoCard label="v₀ measured" value={`${exp3LiveV0Meas.toFixed(3)}`} accent="cyan" />
+              </div>
+            </div>
+
+            {/* Live theta chart */}
+            <div className="flex-1 p-2 flex flex-col min-h-[180px]">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1 flex items-center gap-1">
+                <Activity size={10} /> θ(t) live
+              </div>
+              <div className="flex-1 w-full min-h-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dataHistory}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="timestamp" hide />
+                    <YAxis yAxisId="left" stroke="#a855f7" fontSize={9} tickFormatter={v => v.toFixed(1)} />
+                    <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={9} tickFormatter={v => v.toFixed(1)} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', fontSize: '10px', borderRadius: '6px' }}
+                      labelStyle={{ display: 'none' }}
+                      formatter={(v: number) => v.toFixed(4)}
+                    />
+                    <Line yAxisId="left" type="monotone" dataKey="theta" stroke="#a855f7" strokeWidth={1.5} dot={false} isAnimationActive={false} name="θ (°)" />
+                    <Line yAxisId="right" type="monotone" dataKey="ball_velocity" stroke="#f59e0b" strokeWidth={1.5} dot={false} isAnimationActive={false} name="|v_ball| (m/s)" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* Center: Viewport + Bottom Panel */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 relative bg-gray-900 min-h-0">
+              <div className="absolute inset-0">
+                <WebRTCIsaacViewer serverUrl={SERVER_CONFIG.httpUrl} usdPath={config.usdPath} className="w-full h-full" />
+              </div>
+            </div>
+
+            <div className="h-auto max-h-[45%] bg-white border-t-2 border-gray-200 flex flex-col shrink-0">
+              {/* Action Bar */}
+              <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+                <div className="flex items-center gap-1">
+                  {exp3PhaseSteps.map((step, i) => (
+                    <React.Fragment key={step}>
+                      {i > 0 && <div className={`w-4 h-0.5 rounded ${
+                        (exp3PhaseSteps.indexOf(exp3Phase) >= i) ? 'bg-blue-500' : 'bg-gray-300'
+                      }`} />}
+                      <div className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold ${
+                        exp3Phase === step ? 'bg-blue-600 text-white' :
+                        (exp3PhaseSteps.indexOf(exp3Phase) > i) ? 'bg-blue-100 text-blue-600' :
+                        'bg-gray-200 text-gray-400'
+                      }`}>
+                        {stepLabel(step)}
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+
+                <div className="h-5 w-px bg-gray-300" />
+                <span className="text-[10px] font-mono text-gray-600">
+                  v₀ set = <span className="font-bold text-gray-900">{exp3V0.toFixed(2)} m/s</span>
+                </span>
+
+                <div className="flex-1" />
+
+                <button onClick={exp3HandleFire}
+                  disabled={(exp3Phase !== 'idle' && exp3Phase !== 'recorded') || exp3AllDone}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  1. Fire
+                </button>
+                <button onClick={exp3HandleRecord}
+                  disabled={exp3Phase !== 'settled'}
+                  className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                  2. Record
+                </button>
+                {exp3Trial < EXP3_TARGET_TRIALS ? (
+                  <button onClick={exp3HandleNext}
+                    disabled={exp3Phase !== 'recorded'}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    3. Next Trial
+                  </button>
+                ) : (
+                  <button onClick={exp3GeneratePDF}
+                    disabled={exp3Trials.length === 0}
+                    className="px-3 py-1.5 text-[11px] font-mono font-bold rounded-lg transition-all shadow-sm bg-red-600 hover:bg-red-700 text-white disabled:opacity-30 disabled:cursor-not-allowed">
+                    Generate PDF
+                  </button>
+                )}
+              </div>
+
+              {/* Trial Data Table */}
+              <div className="flex-1 overflow-auto px-4 py-2">
+                {exp3Trials.length === 0 ? (
+                  <div className="flex items-center justify-center h-full text-gray-400 text-sm font-mono">
+                    Set m_ball, m_pend, v₀, L &rarr; Fire &rarr; wait for apex &rarr; Record
+                  </div>
+                ) : (
+                  <table className="w-full text-[10px] font-mono border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 sticky top-0">
+                        {['#', 'm_ball (g)', 'm_pend (g)', 'L (cm)', 'v₀ set', 'θ max (°)', 'h_max (m)', 'v after', 'v₀ derived', '%diff', 'KE in (J)', 'KE after (J)', 'KE loss%'].map(h => (
+                          <th key={h} className="border border-gray-200 px-1.5 py-1.5 text-gray-600 font-bold whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exp3Trials.map(t => (
+                        <tr key={t.trial} className="hover:bg-blue-50/50">
+                          <td className="border border-gray-200 px-1.5 py-1 text-center font-bold">{t.trial}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{(t.ball_mass * 1000).toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{(t.pend_mass * 1000).toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{(t.L * 100).toFixed(1)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-amber-600">{t.v0_input.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.theta_max_deg.toFixed(2)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.h_max.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.v_after_ideal.toFixed(3)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-cyan-600">{t.v0_measured.toFixed(3)}</td>
+                          <td className={`border border-gray-200 px-1.5 py-1 text-right font-bold ${
+                            Math.abs(t.v0_error_pct) < 3 ? 'text-green-600' : 'text-red-600'
+                          }`}>{t.v0_error_pct.toFixed(2)}%</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.ke_input.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right">{t.ke_after_ideal.toFixed(4)}</td>
+                          <td className="border border-gray-200 px-1.5 py-1 text-right text-amber-600 font-bold">{t.ke_loss_percent.toFixed(2)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div className="px-4 py-1.5 border-t border-gray-100 text-[9px] font-mono text-gray-400">
+                {exp3Phase === 'idle' && !exp3AllDone && `Adjust parameters, then Fire. Trial ${exp3Trial}.`}
+                {exp3Phase === 'firing' && 'Ball in flight ... waiting for capture.'}
+                {exp3Phase === 'swinging' && `Ball captured. Pendulum swinging up (θ = ${exp3LiveThetaMax.toFixed(2)}°).`}
+                {exp3Phase === 'settled' && `Apex reached. θ_max = ${exp3LiveThetaMax.toFixed(2)}°, v₀_measured = ${exp3LiveV0Meas.toFixed(3)} m/s. Click Record.`}
+                {exp3Phase === 'recorded' && exp3Trial < EXP3_TARGET_TRIALS && `Trial ${exp3Trial} saved (${exp3Trials.length}/${EXP3_TARGET_TRIALS}). Click Next Trial.`}
+                {exp3Phase === 'recorded' && exp3Trial >= EXP3_TARGET_TRIALS && `All ${EXP3_TARGET_TRIALS} trials complete! Click Generate PDF to export the lab report.`}
+                {exp3AllDone && exp3Phase === 'idle' && `All ${EXP3_TARGET_TRIALS} trials recorded. Click PDF Report at the top right to export.`}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
   // Generic Experiment View (non-exp1)
   // ═══════════════════════════════════════════════════════════════════
 
@@ -1086,9 +1800,9 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
           <span className="font-bold text-xs tracking-widest text-blue-600 uppercase">{config.title}</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
-            <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-            {isConnected ? 'LIVE' : 'OFF'}
+          <div className={`flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border ${isConnected ? 'border-green-400 text-green-700 bg-green-50' : isReconnecting ? 'border-yellow-400 text-yellow-700 bg-yellow-50' : 'border-red-400 text-red-700 bg-red-50'}`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : isReconnecting ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+            {isConnected ? 'LIVE' : isReconnecting ? 'REC...' : 'OFF'}
           </div>
           {vrConnected && (
             <div className="flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-full border border-purple-400 text-purple-700 bg-purple-50">
@@ -1165,6 +1879,10 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                     <img src={exp2ReportData.plots.period} alt="Period" className="w-full rounded border border-gray-200" />
                   )}
                   <div className="flex flex-wrap gap-1">
+                    <button onClick={exp2GeneratePDF}
+                      className="px-2 py-1.5 text-[10px] font-mono font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-sm">
+                      <FileText size={10} className="inline mr-1" />PDF Report
+                    </button>
                     {exp2ReportData.zip_b64 && (
                       <button onClick={() => {
                         const bin = atob(exp2ReportData.zip_b64);
@@ -1198,6 +1916,356 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                         URL.revokeObjectURL(a.href);
                       }} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
                         <Download size={10} className="inline mr-1" />CSV
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Exp4 Driven-Damped Lab Report Status & Downloads */}
+          {isExp4 && (exp4Progress || exp4ReportData) && (
+            <div className="border-b border-gray-200 p-3">
+              {exp4Progress && !exp4ReportData && (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-[10px] font-mono text-amber-600">{exp4Progress}</div>
+                </div>
+              )}
+              {exp4ReportData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-green-600">
+                    Exp 4 Lab Report Generated
+                  </div>
+                  <div className="text-[9px] font-mono text-gray-600 grid grid-cols-2 gap-1">
+                    <span>f₀ theory: <b>{exp4ReportData.physics?.f0_hz?.toFixed(4) ?? '—'} Hz</b></span>
+                    <span>T₀ theory: <b>{exp4ReportData.physics?.T0_s?.toFixed(4) ?? '—'} s</b></span>
+                    <span>I disk: <b>{exp4ReportData.physics?.inertia?.toExponential(3) ?? '—'} kg·m²</b></span>
+                    <span>γ ringdown: <b>{exp4ReportData.free_oscillation_fit?.gamma?.toFixed(4) ?? '—'} /s</b></span>
+                    <span>R² fit: <b>{exp4ReportData.free_oscillation_fit?.r2?.toFixed(4) ?? '—'}</b></span>
+                    <span>%diff f_res: <b>{exp4ReportData.metrics?.pct_diff_lightest?.toFixed(2) ?? '—'}%</b></span>
+                  </div>
+                  {exp4ReportData.plots?.resonance_curves && (
+                    <img src={exp4ReportData.plots.resonance_curves} alt="Resonance curves" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp4ReportData.plots?.phase_lag && (
+                    <img src={exp4ReportData.plots.phase_lag} alt="Phase lag" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp4ReportData.plots?.free_oscillation && (
+                    <img src={exp4ReportData.plots.free_oscillation} alt="Free oscillation" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp4ReportData.plots?.phase_comparison && (
+                    <img src={exp4ReportData.plots.phase_comparison} alt="Phase comparison" className="w-full rounded border border-gray-200" />
+                  )}
+                  <div className="flex flex-wrap gap-1">
+                    <button onClick={exp4GeneratePrettyPDF}
+                      className="px-2 py-1.5 text-[10px] font-mono font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-sm">
+                      <FileText size={10} className="inline mr-1" />Download PDF Report
+                    </button>
+                    {exp4ReportData.zip_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp4ReportData.zip_b64!,
+                        'Expt4_Driven_Damped_Oscillator_Report.zip',
+                        'application/zip',
+                      )} className="px-2 py-1.5 text-[10px] font-mono font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm">
+                        <Download size={10} className="inline mr-1" />Download All (ZIP)
+                      </button>
+                    )}
+                    {exp4ReportData.report_md && (
+                      <button onClick={() => downloadBase64File(
+                        exp4ReportData.report_md!,
+                        'Expt4_Driven_Damped_Oscillator_Report.md',
+                        'text/markdown',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
+                        <FileText size={10} className="inline mr-1" />Markdown
+                      </button>
+                    )}
+                    {exp4ReportData.resonance_csv && (
+                      <button onClick={() => downloadBase64File(
+                        exp4ReportData.resonance_csv!,
+                        'exp4_resonance_curves.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />Resonance CSV
+                      </button>
+                    )}
+                    {exp4ReportData.free_csv && (
+                      <button onClick={() => downloadBase64File(
+                        exp4ReportData.free_csv!,
+                        'exp4_free_oscillation.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />Ringdown CSV
+                      </button>
+                    )}
+                    {exp4ReportData.summary_json && (
+                      <button onClick={() => downloadBase64File(
+                        exp4ReportData.summary_json!,
+                        'exp4_summary.json',
+                        'application/json',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />JSON
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Exp8 Resonance Air Column Report Status & Downloads */}
+          {isExp8 && (exp8Progress || exp8ReportData) && (
+            <div className="border-b border-gray-200 p-3">
+              {exp8Progress && !exp8ReportData && (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-[10px] font-mono text-amber-600">{exp8Progress}</div>
+                </div>
+              )}
+              {exp8ReportData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-green-600">Exp 8 Report Generated</div>
+                  <div className="text-[9px] font-mono text-gray-600 grid grid-cols-2 gap-1">
+                    <span>v measured: <b>{typeof exp8ReportData.metrics?.v_measured === 'number' ? exp8ReportData.metrics.v_measured.toFixed(2) : '—'} m/s</b></span>
+                    <span>v reference: <b>{typeof exp8ReportData.metrics?.v_reference === 'number' ? exp8ReportData.metrics.v_reference.toFixed(1) : '340.0'} m/s</b></span>
+                    <span>% diff: <b>{typeof exp8ReportData.metrics?.v_pct_diff === 'number' ? exp8ReportData.metrics.v_pct_diff.toFixed(2) : '—'} %</b></span>
+                    <span>R² fit: <b>{typeof exp8ReportData.metrics?.r_squared === 'number' ? exp8ReportData.metrics.r_squared.toFixed(4) : '—'}</b></span>
+                    <span>End-effect (meas): <b>{typeof exp8ReportData.metrics?.measured_end_effect_cm === 'number' ? exp8ReportData.metrics.measured_end_effect_cm.toFixed(3) : '—'} cm</b></span>
+                    <span>End-effect 0.3·d: <b>{typeof exp8ReportData.metrics?.theory_end_effect_cm === 'number' ? exp8ReportData.metrics.theory_end_effect_cm.toFixed(3) : '—'} cm</b></span>
+                    <span>f₁ open: <b>{typeof exp8ReportData.metrics?.f_open_fundamental_Hz === 'number' ? exp8ReportData.metrics.f_open_fundamental_Hz.toFixed(2) : '—'} Hz</b></span>
+                    <span>f₁ closed: <b>{typeof exp8ReportData.metrics?.f_closed_fundamental_Hz === 'number' ? exp8ReportData.metrics.f_closed_fundamental_Hz.toFixed(2) : '—'} Hz</b></span>
+                    <span>f₁ open/closed: <b>{typeof exp8ReportData.metrics?.open_to_closed_ratio === 'number' ? exp8ReportData.metrics.open_to_closed_ratio.toFixed(3) : '—'}</b></span>
+                    <span>Closed L points: <b>{exp8ReportData.metrics?.n_closed_lengths ?? '—'}</b></span>
+                  </div>
+                  {exp8ReportData.plots?.L_vs_inv_f && (
+                    <img src={exp8ReportData.plots.L_vs_inv_f} alt="L vs 1/f fit" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp8ReportData.plots?.freq_sweep_user && (
+                    <img src={exp8ReportData.plots.freq_sweep_user} alt="Frequency sweep" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp8ReportData.plots?.envelope_user && (
+                    <img src={exp8ReportData.plots.envelope_user} alt="Standing-wave envelope" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp8ReportData.plots?.length_sweep && (
+                    <img src={exp8ReportData.plots.length_sweep} alt="Length sweep" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp8ReportData.plots?.open_vs_closed && (
+                    <img src={exp8ReportData.plots.open_vs_closed} alt="Open vs Closed" className="w-full rounded border border-gray-200" />
+                  )}
+                  {exp8ReportData.plots?.probe_user && (
+                    <img src={exp8ReportData.plots.probe_user} alt="Probe time-series" className="w-full rounded border border-gray-200" />
+                  )}
+                  <div className="flex flex-wrap gap-1">
+                    {exp8ReportData.zip_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp8ReportData.zip_b64,
+                        'Expt8_Resonance_Air_Column.zip',
+                        'application/zip',
+                      )} className="px-2 py-1.5 text-[10px] font-mono font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm">
+                        <Download size={10} className="inline mr-1" />Download All (ZIP)
+                      </button>
+                    )}
+                    {exp8ReportData.report_md && (
+                      <button onClick={() => downloadBase64File(
+                        exp8ReportData.report_md,
+                        'Expt8_Resonance_Air_Column_Report.md',
+                        'text/markdown',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
+                        <FileText size={10} className="inline mr-1" />Report (.md)
+                      </button>
+                    )}
+                    {exp8ReportData.csv?.closed_L_vs_f && (
+                      <button onClick={() => downloadBase64File(
+                        exp8ReportData.csv.closed_L_vs_f,
+                        'closed_L_vs_f.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />L-vs-f CSV
+                      </button>
+                    )}
+                    {exp8ReportData.csv?.length_sweep_closed && (
+                      <button onClick={() => downloadBase64File(
+                        exp8ReportData.csv.length_sweep_closed,
+                        'length_sweep_closed.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />Length-sweep CSV
+                      </button>
+                    )}
+                    {exp8ReportData.csv?.open_freq_sweep && (
+                      <button onClick={() => downloadBase64File(
+                        exp8ReportData.csv.open_freq_sweep,
+                        'open_freq_sweep.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />Open spectrum CSV
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Exp5 Python Report Status & Downloads */}
+          {isExp5 && (exp5Progress || exp5ReportData) && (
+            <div className="border-b border-gray-200 p-3">
+              {exp5Progress && !exp5ReportData && (
+                <div className="flex items-center gap-2">
+                  {!/error|not enough|no response/i.test(exp5Progress) && (
+                    <div className="w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                  )}
+                  <div className="text-[10px] font-mono text-amber-600">{exp5Progress}</div>
+                </div>
+              )}
+              {exp5ReportData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-green-600">
+                    Exp5 Report Generated
+                  </div>
+                  <div className="text-[9px] font-mono text-gray-600 grid grid-cols-2 gap-1">
+                    <span>T measured: <b>{typeof exp5ReportData.summary?.period_measured_s === 'number' ? exp5ReportData.summary.period_measured_s.toFixed(4) : '—'} s</b></span>
+                    <span>T theory: <b>{typeof exp5ReportData.summary?.period_theory_s === 'number' ? exp5ReportData.summary.period_theory_s.toFixed(4) : '—'} s</b></span>
+                    <span>Error: <b>{typeof exp5ReportData.summary?.period_error_pct === 'number' ? exp5ReportData.summary.period_error_pct.toFixed(2) : '—'}%</b></span>
+                    <span>Samples: <b>{exp5ReportData.summary?.n_samples ?? '—'}</b></span>
+                  </div>
+                  {(exp5ReportData.plots as Record<string, string | null | undefined> | undefined)?.period_curve && (
+                    <img
+                      src={(exp5ReportData.plots as Record<string, string | null | undefined>).period_curve || ''}
+                      alt="Period curve"
+                      className="w-full rounded border border-gray-200"
+                    />
+                  )}
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      onClick={async () => {
+                        if (!exp5ReportData?.summary || !exp5ReportData.plots) return;
+                        try {
+                          const blob = await pdf(
+                            <Exp5ReportPDF
+                              data={{
+                                summary: exp5ReportData.summary as unknown as Exp5ReportData['summary'],
+                                period_rows: (exp5ReportData.period_rows ?? []) as unknown as Exp5ReportData['period_rows'],
+                                plots: exp5ReportData.plots as unknown as Exp5ReportData['plots'],
+                              }}
+                            />,
+                          ).toBlob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = 'Lab_Report_Rotational_Inertia_Physical_Pendulum.pdf';
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch (err) {
+                          alert(`PDF render failed: ${(err as Error).message ?? 'unknown error'}`);
+                        }
+                      }}
+                      className="px-2 py-1.5 text-[10px] font-mono font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-sm"
+                    >
+                      <FileText size={10} className="inline mr-1" />PDF Report
+                    </button>
+                    {exp5ReportData.zip_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp5ReportData.zip_b64!,
+                        exp5ReportData.files?.zip || 'Expt5_Rotational_Inertia_Report.zip',
+                        'application/zip',
+                      )} className="px-2 py-1.5 text-[10px] font-mono font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm">
+                        <Download size={10} className="inline mr-1" />Download All
+                      </button>
+                    )}
+                    {exp5ReportData.csv_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp5ReportData.csv_b64!,
+                        exp5ReportData.files?.csv || 'exp5_raw_timeseries.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />CSV
+                      </button>
+                    )}
+                    {exp5ReportData.period_csv_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp5ReportData.period_csv_b64!,
+                        exp5ReportData.files?.period_csv || 'exp5_cycle_periods.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />Periods
+                      </button>
+                    )}
+                    {exp5ReportData.report_md && (
+                      <button onClick={() => downloadBase64File(
+                        exp5ReportData.report_md!,
+                        exp5ReportData.files?.markdown || 'Expt5_Rotational_Inertia_Report.md',
+                        'text/markdown',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
+                        <FileText size={10} className="inline mr-1" />Markdown
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Exp6 Python Report Status & Downloads */}
+          {isExp6 && (exp6Progress || exp6ReportData) && (
+            <div className="border-b border-gray-200 p-3">
+              {exp6Progress && !exp6ReportData && (
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-[10px] font-mono text-amber-600">{exp6Progress}</div>
+                </div>
+              )}
+              {exp6ReportData && (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-green-600">
+                    Exp6 Report Generated
+                  </div>
+                  <div className="text-[9px] font-mono text-gray-600 grid grid-cols-2 gap-1">
+                    <span>F measured: <b>{typeof exp6ReportData.summary?.mean_force_N === 'number' ? exp6ReportData.summary.mean_force_N.toFixed(4) : '—'} N</b></span>
+                    <span>Error: <b>{typeof exp6ReportData.summary?.force_error_pct === 'number' ? exp6ReportData.summary.force_error_pct.toFixed(2) : '—'}%</b></span>
+                    <span>Samples: <b>{exp6ReportData.summary?.n_samples ?? '—'}</b></span>
+                    <span>Duration: <b>{typeof exp6ReportData.summary?.duration_s === 'number' ? exp6ReportData.summary.duration_s.toFixed(2) : '—'} s</b></span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    <button onClick={exp6GeneratePrettyPDF}
+                      className="px-2 py-1.5 text-[10px] font-mono font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-sm">
+                      <FileText size={10} className="inline mr-1" />Styled PDF
+                    </button>
+                    {exp6ReportData.pdf_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp6ReportData.pdf_b64!,
+                        exp6ReportData.files?.pdf || 'Lab_Report_Centripetal_Force_backend.pdf',
+                        'application/pdf',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-red-50 text-red-700 border border-red-200 rounded-lg hover:bg-red-100">
+                        <FileText size={10} className="inline mr-1" />Backend PDF
+                      </button>
+                    )}
+                    {exp6ReportData.zip_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp6ReportData.zip_b64!,
+                        exp6ReportData.files?.zip || 'Expt6_Centripetal_Force_Report.zip',
+                        'application/zip',
+                      )} className="px-2 py-1.5 text-[10px] font-mono font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm">
+                        <Download size={10} className="inline mr-1" />Download All
+                      </button>
+                    )}
+                    {exp6ReportData.csv_b64 && (
+                      <button onClick={() => downloadBase64File(
+                        exp6ReportData.csv_b64!,
+                        exp6ReportData.files?.csv || 'exp6_raw_timeseries.csv',
+                        'text/csv',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-gray-50 text-gray-700 border border-gray-200 rounded-lg hover:bg-gray-100">
+                        <Download size={10} className="inline mr-1" />CSV
+                      </button>
+                    )}
+                    {exp6ReportData.report_md && (
+                      <button onClick={() => downloadBase64File(
+                        exp6ReportData.report_md!,
+                        exp6ReportData.files?.markdown || 'Expt6_Centripetal_Force_Report.md',
+                        'text/markdown',
+                      )} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
+                        <FileText size={10} className="inline mr-1" />Markdown
                       </button>
                     )}
                   </div>

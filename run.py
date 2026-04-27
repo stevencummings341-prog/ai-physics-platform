@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""CLI entry point for the AI Physics Experiment Platform.
+"""CLI entry point for the AI Physics Experiment Platform (batch mode).
+
+Web-interactive experiments live in core/webrtc_server.py and are launched
+through ./launch.sh + start_server.py. This script is for the offline
+batch-mode experiments (configure -> run -> analyze -> report).
 
 Usage:
-    python run.py expt1_angular_momentum              # angular momentum conservation
-    python run.py expt7_momentum                     # linear momentum conservation
-    python run.py expt7_momentum --headless           # no GUI
-    python run.py expt7_momentum --vr                 # enable VR streaming
-    python run.py expt7_momentum --config path.yaml   # custom config
+    python run.py expt1_angular_momentum              # angular momentum
+    python run.py expt2_large_pendulum                # large amplitude pendulum
+    python run.py expt3_ballistic_pendulum            # ballistic pendulum
+    python run.py <experiment> --headless             # no GUI
+    python run.py <experiment> --vr                   # enable VR streaming
+    python run.py <experiment> --config path.yaml     # custom config
 """
 
 from __future__ import annotations
@@ -22,11 +27,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("run")
 
+# Only experiments that ship a batch ExperimentBase subclass are listed here.
+# Web-only experiments (4, 5, 6, 7, 8) live exclusively in core/webrtc_server.py.
 EXPERIMENT_REGISTRY: dict[str, str] = {
     "expt1_angular_momentum": "experiments.expt1_angular_momentum.sim",
     "expt2_large_pendulum": "experiments.expt2_large_pendulum.sim",
     "expt3_ballistic_pendulum": "experiments.expt3_ballistic_pendulum.sim",
-    "expt7_momentum": "experiments.expt7_momentum.sim",
 }
 
 

@@ -36,7 +36,7 @@ export const EXPERIMENTS: ExperimentConfig[] = [
       { id: 'damping', label: 'Damping Coefficient', type: 'slider', min: 0.0, max: 0.02, step: 0.0005, defaultValue: 0.0025, command: 'set_exp2_damping' },
       { id: 'run', label: 'Run Pendulum', type: 'button', command: 'start_simulation' },
       { id: 'reset', label: 'Reset', type: 'button', command: 'reset' },
-      { id: 'full_experiment', label: 'Generate Full Report', type: 'button', command: 'run_exp2_full_experiment' }
+      { id: 'full_experiment', label: 'Generate Report Data', type: 'button', command: 'run_exp2_full_experiment' }
     ],
     chartConfig: [
       { key: 'theta', color: '#8b5cf6', label: 'θ (°)', yAxisId: 'left' },
@@ -99,7 +99,8 @@ export const EXPERIMENTS: ExperimentConfig[] = [
       { id: 'spring', label: 'Torsional κ (N·m/rad)', type: 'slider', min: 0.002, max: 0.020, step: 0.001, defaultValue: 0.006, command: 'set_exp4_spring' },
       { id: 'run', label: 'Start Driver', type: 'button', command: 'start_simulation' },
       { id: 'free', label: 'Free Oscillation (measure ω₀)', type: 'button', command: 'exp4_free_oscillation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' },
+      { id: 'full_experiment', label: 'Generate Lab Report', type: 'button', command: 'run_exp4_full_experiment' }
     ],
     chartConfig: [
       { key: 'theta', color: '#ef4444', label: 'Disk θ (°)', yAxisId: 'left' },
@@ -130,7 +131,8 @@ export const EXPERIMENTS: ExperimentConfig[] = [
       { id: 'exp5_x', label: 'Pivot Distance x (m)', type: 'slider', min: 0.01, max: 0.50, step: 0.01, defaultValue: 0.10, command: 'set_exp5_x' },
       { id: 'exp5_theta0', label: 'Initial Angle θ₀ (°)', type: 'slider', min: 1, max: 15, step: 0.5, defaultValue: 5, command: 'set_exp5_theta0' },
       { id: 'run', label: 'Run Pendulum', type: 'button', command: 'start_simulation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' },
+      { id: 'export_report', label: 'Export Lab Report', type: 'button', command: 'export_exp5_report' }
     ],
     chartConfig: [
       { key: 'theta', color: '#a855f7', label: 'θ (°)', yAxisId: 'left' },
@@ -146,22 +148,37 @@ export const EXPERIMENTS: ExperimentConfig[] = [
   {
     id: 'exp-06-centripetal-force',
     title: 'Centripetal Force',
-    description: 'Investigate the relationship between centripetal force, mass, and circular motion. (Coming Soon)',
+    description: 'A bob slides along a rotating arm tethered by a stiff spring to the spin axis. PhysX drives a kinematic rotor at angular velocity ω and integrates the bob motion through a prismatic joint with a linear drive (stiffness = k, target = r). The spring stretches until F_spring = k·(r_actual − r_target) balances the centripetal force required for circular motion — the reading is the spring force PhysX computed from the integrated dynamics, compared live against the analytic reference F = m·ω²·r.',
     thumbnail: 'https://picsum.photos/seed/centripetal/400/225',
     usdPath: 'Experiment/exp.usd',
     experimentNumber: '6',
-    difficulty: 'Easy',
-    isLocked: true,
+    difficulty: 'Medium',
+    isLocked: false,
     controls: [
-      { id: 'mass', label: 'Mass (kg)', type: 'slider', min: 0.1, max: 2, step: 0.1, defaultValue: 0.5, command: 'set_mass' },
-      { id: 'radius', label: 'Radius (m)', type: 'slider', min: 0.1, max: 1, step: 0.05, defaultValue: 0.3, command: 'set_radius' },
-      { id: 'angular_velocity', label: 'Angular Velocity (rad/s)', type: 'slider', min: 1, max: 10, step: 0.5, defaultValue: 5, command: 'set_angular_velocity' },
-      { id: 'run', label: 'Run', type: 'button', command: 'start_simulation' },
+      { id: 'exp6_mass', label: 'Bob Mass m (kg)', type: 'slider', min: 0.005, max: 0.200, step: 0.005, defaultValue: 0.030, command: 'set_exp6_mass' },
+      { id: 'exp6_radius', label: 'Target Radius r (m)', type: 'slider', min: 0.05, max: 0.40, step: 0.005, defaultValue: 0.15, command: 'set_exp6_radius' },
+      { id: 'exp6_omega', label: 'Angular Velocity ω (rad/s)', type: 'slider', min: 0.0, max: 12.0, step: 0.1, defaultValue: 5.0, command: 'set_exp6_omega' },
+      { id: 'exp6_spring_k', label: 'Spring Stiffness k (N/m)', type: 'slider', min: 30, max: 600, step: 5, defaultValue: 250, command: 'set_exp6_spring_k' },
+      { id: 'exp6_damper', label: 'Damping c (N·s/m)', type: 'slider', min: 0.0, max: 3.0, step: 0.05, defaultValue: 0.4, command: 'set_exp6_damper' },
+      { id: 'run', label: 'Start Rotation', type: 'button', command: 'start_simulation' },
+      { id: 'stop', label: 'Stop', type: 'button', command: 'stop_simulation' },
+      { id: 'exp6_report', label: 'Export Lab Report (PDF)', type: 'button', command: 'export_exp6_report' },
       { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
     ],
     chartConfig: [
-      { key: 'centripetal_force', color: '#fb923c', label: 'Centripetal Force (N)', yAxisId: 'left' },
-      { key: 'tension', color: '#ff4444', label: 'String Tension (N)', yAxisId: 'right' }
+      { key: 'centripetal_force', color: '#fb923c', label: 'Measured F (N)', yAxisId: 'left' },
+      { key: 'force_theory', color: '#a855f7', label: 'Theory m·ω²·r (N)', yAxisId: 'left' },
+      { key: 'radius_actual', color: '#10b981', label: 'r actual (m)', yAxisId: 'right' },
+      { key: 'speed', color: '#3b82f6', label: 'Bob speed (m/s)', yAxisId: 'right' }
+    ],
+    extraMetrics: [
+      { key: 'radius_target', label: 'r target (m)', color: '#cbd5f5' },
+      { key: 'spring_extension', label: 'Spring Δx (m)', color: '#22d3ee' },
+      { key: 'force_kinematic', label: 'm·v²/r measured (N)', color: '#f59e0b' },
+      { key: 'force_error_pct', label: 'F error vs theory (%)', color: '#ef4444' },
+      { key: 'omega', label: 'ω live (rad/s)', color: '#60a5fa' },
+      { key: 'omega_critical', label: 'ω critical √(k/m) (rad/s)', color: '#f97316' },
+      { key: 'kinetic_energy', label: 'KE (J)', color: '#84cc16' }
     ]
   },
   {
@@ -209,7 +226,8 @@ export const EXPERIMENTS: ExperimentConfig[] = [
       { id: 'tube_open', label: 'Open Tube (piston out)', type: 'button', command: 'exp8_open_tube' },
       { id: 'run', label: 'Generate Tone', type: 'button', command: 'start_simulation' },
       { id: 'stop', label: 'Stop', type: 'button', command: 'stop_simulation' },
-      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' }
+      { id: 'reset', label: 'Reset', type: 'button', command: 'reset' },
+      { id: 'full_experiment', label: 'Generate Full Report', type: 'button', command: 'run_exp8_full_experiment' }
     ],
     chartConfig: [
       { key: 'probe_value', color: '#ec4899', label: 'Probe Displacement (m)', yAxisId: 'left' },

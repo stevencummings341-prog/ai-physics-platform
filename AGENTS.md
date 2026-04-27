@@ -16,25 +16,50 @@ Full-stack physics experiment platform on a university Linux server (NVIDIA RTX 
 ## Directory Layout
 
 ```
-core/                    → Shared framework
-  experiment_base.py     → ABC for batch experiments (configure → run → analyze → report)
+core/                    → Shared backend framework
   webrtc_server.py       → WebRTC + WebSocket server (runs inside Isaac Sim)
+  experiment_base.py     → ABC for batch experiments (configure → run → analyze → report)
   scene.py, recorder.py  → Scene utils, data recording
   reporter.py            → Jinja2 → Markdown/PDF reports
-frontend/                → React web UI
-  src/experiments.ts     → Experiment UI definitions (controls, charts, difficulty)
+  vr.py, vr_hand_receiver.py → Quest 3S hand-tracking bridge
+  exp2_analysis.py       → Shared analytics for Exp 2 (web + batch)
+  exp4_report.py         → Exp 4 lab-report data pipeline
+  exp5_report.py         → Exp 5 lab-report data pipeline
+  exp8_analysis.py       → Exp 8 1-D wave solver
+frontend/                → React 19 web UI
+  src/experiments.ts     → 8 experiment UI definitions (controls, charts, difficulty)
   src/config.ts          → Server URL config (auto-detects or reads .env)
   src/services/          → WebSocket client service
-  src/components/        → Landing, LevelSelect, ExperimentView, WebRTCViewer
+  src/components/        → Landing, LevelSelect, ExperimentView, WebRTCViewer,
+                           Exp{1..7}ReportPDF (react-pdf lab reports)
+  src/utils/             → Chart-rendering helpers
 configs/server.py        → All server config (ports, paths, defaults) — env-var overridable
-camera/                  → Per-experiment camera preset scripts (usd1.py–usd8.py)
 experiments/             → Batch experiment subpackages (exptN_name/)
 Experiment/              → USD scene assets (exp1/–exp8/ + exp.usd)
+report_templates/        → Jinja2 Markdown lab-report templates
+camera/                  → Dev-time camera-pose snippets (NOT used at runtime;
+                           runtime camera presets live in core/webrtc_server.py)
+vr/                      → Meta Quest 3S Unity app + setup docs
+launchers/bin/           → Share-tunnel binaries (bore)
 start_server.py          → Isaac Sim Script Editor entry point
-launch.sh                → One-click frontend launcher
+start_isaac.sh           → Isaac Sim launcher (auto-detects DISPLAY)
+launch.sh                → One-click frontend [+ Isaac Sim] launcher
+share.sh                 → Public tunnel (bore.pub / localhost.run)
+setup.sh                 → One-shot environment install
+bootstrap.sh             → SSH key + git config bootstrap
 run.py                   → CLI batch entry point
-docs/                    → Project state, roadmap, ADRs, handoffs
-state/                   → Machine-readable context (active_context.json)
+docs/                    → Persistent project truth
+  START_HERE.md / PROJECT_STATE.md / ROADMAP.md / AGENTS.md
+  adr/                   → architecture decision records
+  handoff/               → session continuity notes
+  experiments/           → per-experiment docs
+  templates/             → startup / closeout templates
+  reference/             → lab manuals and reference PDFs
+  legacy/                → preserved teammate scripts (post-integration)
+state/                   → Machine-readable context
+  active_context.json
+  artifact_manifest.json
+outputs/                 → Auto-generated run artifacts (gitignored)
 ```
 
 ## Quick Start
@@ -105,18 +130,20 @@ Browser → `frontend/` → WebSocket → `core/webrtc_server.py` → Isaac Sim 
 
 ## Current Experiment Status
 
-| # | Name | Web | Batch | Status |
-|---|------|-----|-------|--------|
-| 1 | Angular Momentum | ✅ | ✅ | Full |
-| 2 | Large Pendulum | ✅ | ✅ | Full (procedural RK4 + batch sweep) |
-| 3 | Ballistic Pendulum | 🔒 | - | Stub |
-| 4 | Driven Damped | ✅ | - | Full (PhysX torsional drive + resonance telemetry) |
-| 5 | Rotational Inertia | 🔒 | - | Stub |
-| 6 | Centripetal Force | 🔒 | - | Stub |
-| 7 | Momentum Conservation | ✅ | ✅ | Full (procedural scene + telemetry) |
-| 8 | Resonance Air Column | 🔒 | - | Stub |
+| # | Name | Web | Batch | Lab Report PDF |
+|---|------|-----|-------|----------------|
+| 1 | Angular Momentum | ✅ | ✅ | ✅ Exp1ReportPDF.tsx |
+| 2 | Large Pendulum | ✅ | ✅ | ✅ Exp2ReportPDF.tsx |
+| 3 | Ballistic Pendulum | ✅ | ✅ | ✅ Exp3ReportPDF.tsx |
+| 4 | Driven Damped | ✅ | report-only | ✅ Exp4ReportPDF.tsx |
+| 5 | Rotational Inertia | ✅ | — | ✅ Exp5ReportPDF.tsx |
+| 6 | Centripetal Force | ✅ | — | ✅ Exp6ReportPDF.tsx |
+| 7 | Momentum Conservation | ✅ | ✅ | ✅ Exp7ReportPDF.tsx |
+| 8 | Resonance Air Column | ✅ | — | (analysis pipeline only) |
 
-🔒 = UI exists but locked; server handler is placeholder.
+All eight experiments are unlocked in the frontend. Lab-report PDFs are
+rendered client-side via `@react-pdf/renderer` using the formal CUHK-Shenzhen
+PHY1002 layout (cover page, codecogs LaTeX, academic tables, page numbers).
 
 ## Ports
 
