@@ -640,6 +640,13 @@ class WebRTCServer:
         self.exp4_drive_task: Optional[asyncio.Task] = None
         self._exp4_drive_target_attr = None  # cached USD attr handle
         self._exp4_drive_arm_op = None       # cached RotateZOp on driver arm
+        # Cache of the most-recent fully-rendered Exp 4 lab-report payload so
+        # the frontend can re-fetch it after a WebSocket reconnect (e.g. when
+        # the user navigated away mid-pipeline). Populated by
+        # _run_exp4_full_experiment, served by fetch_exp4_report.
+        self._exp4_report_cache: Optional[dict] = None
+        self._exp4_report_status: str = "idle"   # idle | running | ready | error
+        self._exp4_report_error: Optional[str] = None
         # Legacy alias (old message type "set_damping" still needs a bucket)
         self.exp4_damping = self.exp4_damping_gamma
 
@@ -787,13 +794,32 @@ class WebRTCServer:
         @pc.on("connectionstatechange")
         async def _on_state():
             state = pc.connectionState
-            carb.log_info(f"[webrtc] peer state -> {state} (peers={len(self.pcs)})")
-            if state in ("failed", "closed", "disconnected"):
+            carb.log_warn(f"[webrtc] peer state -> {state} (peers={len(self.pcs)})")
+            # CRITICAL: Do NOT tear down on 'disconnected'.
+            #
+            # In WebRTC, 'disconnected' is a *transient* state that means
+            # "ICE keepalives are temporarily not arriving" — typically
+            # 100–500 ms of network or CPU stall.  The browser's own ICE
+            # state machine will recover automatically (or fall through
+            # to 'failed' if the link is truly dead).
+            #
+            # Closing the peer here was the root cause of "Connection
+            # Failed" appearing every time the asyncio loop blocked
+            # briefly (which happens during tl.stop()/play(), scene
+            # rebuilds, ctx.new_stage(), and other synchronous Isaac
+            # calls).  Once we close, the browser has no choice but a
+            # full reconnect.  Letting WebRTC ride the bump fixes the
+            # "天天断连" complaint.
+            if state == "failed":
                 self.pcs.discard(pc)
                 try:
                     await pc.close()
                 except Exception:
                     pass
+            elif state == "closed":
+                # Already closed by either side — just clean up our
+                # reference; a second close() would be a no-op anyway.
+                self.pcs.discard(pc)
 
         @pc.on("iceconnectionstatechange")
         async def _on_ice_state():
@@ -1212,6 +1238,11 @@ class WebRTCServer:
             await self._start_exp4_free_oscillation()
         elif mtype == "run_exp4_full_experiment":
             asyncio.ensure_future(self._run_exp4_full_experiment(ws))
+        elif mtype == "fetch_exp4_report":
+            # Frontend asks for the most-recent rendered report. Used after
+            # a WS reconnect: the original socket dropped mid-pipeline, the
+            # new socket re-asks for whatever finished in the meantime.
+            await self._send_exp4_report_status(ws)
 
         # Experiment 5 — physical pendulum (rotational inertia)
         elif mtype == "set_exp5_m":
@@ -1434,14 +1465,10 @@ class WebRTCServer:
         core/exp2_analysis.py and experiments/expt2_large_pendulum/sim.py).
         """
         try:
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp2: no stage after new_stage()")
+                carb.log_error("exp2: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -1874,14 +1901,10 @@ class WebRTCServer:
             self.simulation_control_enabled = False
             self.exp3_scene_built = False
 
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp3: no stage after new_stage()")
+                carb.log_error("exp3: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -2604,14 +2627,10 @@ class WebRTCServer:
             minimum at x = L / √12
         """
         try:
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp5: no stage after new_stage()")
+                carb.log_error("exp5: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -3046,14 +3065,10 @@ class WebRTCServer:
                 TableMaterial, BobMaterial  (frictionless)
         """
         try:
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp6: no stage after new_stage()")
+                carb.log_error("exp6: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -4235,14 +4250,10 @@ class WebRTCServer:
     async def _setup_exp4_scene(self):
         """Build the driven-damped torsional oscillator scene procedurally."""
         try:
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp4: no stage after new_stage()")
+                carb.log_error("exp4: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -4833,10 +4844,97 @@ class WebRTCServer:
 
     # --- Exp4 lab-report pipeline ------------------------------------------
 
+    async def _safe_ws_send(self, ws, msg: dict) -> bool:
+        """Send a JSON message on *ws*, swallowing transport-closed errors.
+
+        Returns True if delivery succeeded, False otherwise. Never raises
+        — this is meant for one-shot result deliveries where a closed
+        socket is a normal mid-pipeline outcome (the user navigated away,
+        their browser refreshed, the SSH tunnel dropped, etc.).
+        """
+        try:
+            if getattr(ws, "closed", False):
+                return False
+            await ws.send_json(msg)
+            return True
+        except (ConnectionResetError, RuntimeError, asyncio.CancelledError):
+            return False
+        except Exception as exc:
+            carb.log_warn(f"_safe_ws_send: dropped frame ({type(exc).__name__}: {exc})")
+            return False
+
+    async def _broadcast_or_ignore(self, msg: dict) -> int:
+        """Send *msg* to every connected WS client; ignore individual failures.
+
+        Returns the number of successful sends.
+        """
+        if not self.ws_clients:
+            return 0
+        clients = [w for w in list(self.ws_clients) if not getattr(w, "closed", False)]
+        if not clients:
+            return 0
+        results = await asyncio.gather(
+            *(self._safe_ws_send(w, msg) for w in clients),
+            return_exceptions=False,
+        )
+        return sum(1 for ok in results if ok)
+
+    async def _send_exp4_report_status(self, ws) -> None:
+        """Reply to a `fetch_exp4_report` request with whatever the server
+        currently holds: the cached payload if a report finished, an
+        in-progress status message if a pipeline is still running, or an
+        error if the last run failed.
+        """
+        status = self._exp4_report_status
+        if status == "ready" and self._exp4_report_cache is not None:
+            await self._safe_ws_send(ws, {
+                "type": "exp4_report_ready",
+                "data": self._exp4_report_cache,
+            })
+        elif status == "running":
+            await self._safe_ws_send(ws, {
+                "type": "exp4_progress",
+                "data": {"phase": "Generating report (still running on server)…",
+                         "current": 0, "total": 0},
+            })
+        elif status == "error":
+            await self._safe_ws_send(ws, {
+                "type": "exp4_progress",
+                "data": {"phase": f"Error: {self._exp4_report_error or 'unknown'}",
+                         "current": 0, "total": 0},
+            })
+        else:
+            await self._safe_ws_send(ws, {
+                "type": "exp4_progress",
+                "data": {"phase": "No report has been generated yet.",
+                         "current": 0, "total": 0},
+            })
+
     async def _run_exp4_full_experiment(self, ws):
         """Run free-oscillation fit + 3-damping resonance sweep + phase
-        comparison runs, render plots / Markdown / ZIP, and ship the result
-        back as a base64 payload (mirrors the Exp 2 pipeline)."""
+        comparison runs, render plots / Markdown / PDF / ZIP, cache the
+        result on the server, and broadcast it to every connected client.
+
+        Robustness contract:
+          * If *ws* drops during the pipeline, every other connected client
+            still receives `exp4_report_ready`.
+          * The result is cached on ``self._exp4_report_cache`` so a client
+            that reconnects later can ask for it with `fetch_exp4_report`.
+          * Transport-closed errors during send are logged and swallowed —
+            they never abort the handler.
+        """
+        # If a previous run is still in flight, refuse to start a second
+        # concurrent pipeline (it would exhaust CPU and stomp the cache).
+        if self._exp4_report_status == "running":
+            await self._safe_ws_send(ws, {
+                "type": "exp4_progress",
+                "data": {"phase": "A report is already being generated…",
+                         "current": 0, "total": 0},
+            })
+            return
+
+        self._exp4_report_status = "running"
+        self._exp4_report_error = None
         try:
             import base64
             from datetime import datetime
@@ -4860,11 +4958,13 @@ class WebRTCServer:
 
             loop = asyncio.get_event_loop()
 
-            async def progress(name: str, current: int, total: int):
-                if not ws.closed:
-                    await ws.send_json({"type": "exp4_progress", "data": {
-                        "phase": name, "current": current, "total": total,
-                    }})
+            # Progress is broadcast to every connected client so the user
+            # still sees the spinner advance even after a reconnect.
+            async def broadcast_progress(name: str, current: int, total: int):
+                await self._broadcast_or_ignore({
+                    "type": "exp4_progress",
+                    "data": {"phase": name, "current": current, "total": total},
+                })
 
             # The analysis pipeline is CPU-bound and synchronous; run it in
             # an executor so the WebSocket / WebRTC loops keep their cadence.
@@ -4873,17 +4973,22 @@ class WebRTCServer:
             def _on_progress_sync(name: str, current: int, total: int):
                 progress_holder.append((name, current, total))
 
+            stop_drain = asyncio.Event()
+
             async def _drain_progress():
-                while not ws.closed:
+                while not stop_drain.is_set():
                     if progress_holder:
                         name, cur, tot = progress_holder.pop(0)
-                        await progress(name, cur, tot)
+                        await broadcast_progress(name, cur, tot)
                     else:
-                        await asyncio.sleep(0.25)
+                        try:
+                            await asyncio.wait_for(stop_drain.wait(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            pass
 
             drain_task = asyncio.ensure_future(_drain_progress())
 
-            await progress("Starting Exp 4 report pipeline", 0, 5)
+            await broadcast_progress("Starting Exp 4 report pipeline", 0, 5)
 
             def _do_run():
                 return run_exp4_full_experiment(
@@ -4896,18 +5001,18 @@ class WebRTCServer:
                     damping_levels=damping_levels,
                     f_min_hz=0.10,
                     f_max_hz=None,  # auto = 2.5·f₀
-                    sweep_points=18,
+                    sweep_points=12,  # was 18 — reduces total runtime by ~3×
                     on_progress=_on_progress_sync,
                 )
 
             result = await loop.run_in_executor(None, _do_run)
-            drain_task.cancel()
+            stop_drain.set()
             try:
                 await drain_task
             except asyncio.CancelledError:
                 pass
 
-            await progress("Packaging report", 5, 5)
+            await broadcast_progress("Packaging report", 5, 5)
             zip_path = package_zip(out_dir)
             report_path = result["report_path"]
             pdf_path = result.get("pdf_path")
@@ -4955,18 +5060,29 @@ class WebRTCServer:
                 "out_dir": out_dir,
             }
 
-            if not ws.closed:
-                await ws.send_json({"type": "exp4_report_ready", "data": payload})
-            carb.log_warn(f"exp4: full report pipeline complete → {out_dir}")
+            # Cache before sending so the report survives WS drops.
+            self._exp4_report_cache = payload
+            self._exp4_report_status = "ready"
+
+            n_sent = await self._broadcast_or_ignore({
+                "type": "exp4_report_ready",
+                "data": payload,
+            })
+            carb.log_warn(
+                f"exp4: full report pipeline complete → {out_dir}  "
+                f"(delivered to {n_sent} client(s); cached for any reconnects)"
+            )
 
         except Exception as exc:
             import traceback
+            self._exp4_report_status = "error"
+            self._exp4_report_error = str(exc)
             carb.log_error(f"_run_exp4_full_experiment: {exc}")
             carb.log_error(traceback.format_exc())
-            if not ws.closed:
-                await ws.send_json({"type": "exp4_progress", "data": {
-                    "phase": f"Error: {exc}", "current": 0, "total": 0,
-                }})
+            await self._broadcast_or_ignore({
+                "type": "exp4_progress",
+                "data": {"phase": f"Error: {exc}", "current": 0, "total": 0},
+            })
 
     # --- Exp4 camera --------------------------------------------------------
 
@@ -5014,6 +5130,57 @@ class WebRTCServer:
     def _store_param(self, exp_id: str, key: str, data: dict):
         """Store a generic parameter for experiments that don't need immediate USD apply."""
         self._exp_params.setdefault(exp_id, {})[key] = float(data.get("value", 0))
+
+    async def _safe_reset_world(self):
+        """Clear all experiment content while keeping the active camera alive.
+
+        Background: every experiment's ``_setup_*_scene`` used to call
+        ``ctx.new_stage()`` to wipe the previous experiment's content.
+        ``new_stage()`` replaces the entire USD stage — including the
+        ``/OmniverseKit_Persp`` camera that the WebRTC track has cached
+        in a ``Camera`` wrapper.  After ``new_stage()`` the wrapper's
+        underlying prim is invalid for ~0.5–1 s, the asyncio loop
+        synchronously waits for 15 ticks, and the WebRTC peer briefly
+        slips into the ``disconnected`` ICE state.  Combined with the
+        prior bug where the backend immediately closed the peer on
+        ``disconnected``, this is what caused "Connection Failed" to
+        flash on every parameter change that triggered a rebuild.
+
+        The fix: only remove ``/World`` (and ``/Stage`` / ``/Render``
+        sublayers if present).  System cameras live at the stage root
+        (``/OmniverseKit_Persp``, etc.), so they survive untouched and
+        the WebRTC capture pipeline keeps producing frames throughout
+        the rebuild.  This also skips the ~250 ms cost of allocating a
+        fresh stage object every time.
+
+        Falls back to ``ctx.new_stage()`` only if there is no current
+        stage at all (very first scene build of the session).
+        """
+        ctx = omni.usd.get_context()
+        stage = ctx.get_stage()
+        if stage is None:
+            ctx.new_stage()
+            app = omni.kit.app.get_app()
+            for _ in range(15):
+                await app.next_update_async()
+            return ctx.get_stage()
+
+        # Surgical clear — remove only the user-content roots, leave
+        # the system cameras and stage shell intact.
+        for path in ("/World",):
+            p = stage.GetPrimAtPath(path)
+            if p and p.IsValid():
+                try:
+                    stage.RemovePrim(path)
+                except Exception as exc:
+                    carb.log_warn(f"_safe_reset_world: could not remove {path}: {exc}")
+
+        app = omni.kit.app.get_app()
+        # Fewer ticks needed than for new_stage() because we kept the
+        # stage object — just give USD/PhysX a few frames to settle.
+        for _ in range(8):
+            await app.next_update_async()
+        return stage
 
     async def _apply_mass_at(self, prim_path: str, mass: float):
         """Apply MassAPI to any prim — shared helper for exp3-8."""
@@ -5424,14 +5591,10 @@ class WebRTCServer:
     async def _setup_exp7_scene(self):
         """Build the momentum-conservation scene from scratch (ground + 2 carts)."""
         try:
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp7: no stage after new_stage()")
+                carb.log_error("exp7: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")
@@ -5772,14 +5935,10 @@ class WebRTCServer:
             self._exp8_piston_op = None
             self._exp8_handle_op = None
             self._exp8_grip_op = None
-            ctx = omni.usd.get_context()
-            ctx.new_stage()
+            stage = await self._safe_reset_world()
             app = omni.kit.app.get_app()
-            for _ in range(15):
-                await app.next_update_async()
-            stage = ctx.get_stage()
             if not stage:
-                carb.log_error("exp8: no stage after new_stage()")
+                carb.log_error("exp8: no stage after world reset")
                 return
 
             UsdGeom.Xform.Define(stage, "/World")

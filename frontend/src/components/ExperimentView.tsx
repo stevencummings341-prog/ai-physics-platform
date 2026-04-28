@@ -13,6 +13,7 @@ import Exp5ReportPDF, { type Exp5ReportData } from './Exp5ReportPDF';
 import Exp3ReportPDF, { type Exp3Trial } from './Exp3ReportPDF';
 import Exp6ReportPDF, { type Exp6ReportData as Exp6PrettyReportData } from './Exp6ReportPDF';
 import Exp4ReportPDF, { type Exp4ReportData as Exp4PrettyReportData } from './Exp4ReportPDF';
+import Exp8ReportPDF, { type Exp8ReportData } from './Exp8ReportPDF';
 import { generateExp7Charts } from '../utils/exp7Charts';
 import { generateExp3Charts } from '../utils/exp3Charts';
 import { renderTrialChart } from '../utils/renderTrialChart';
@@ -179,6 +180,12 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
   const isExp4 = config.experimentNumber === '4';
   const [exp4Progress, setExp4Progress] = useState<string>('');
   const [exp4ReportData, setExp4ReportData] = useState<Exp4ReportData | null>(null);
+  // Timestamp of the last "Generate Lab Report" click. We use it as a
+  // watchdog: if the report hasn't arrived after 90 s we re-poll the
+  // backend's cached payload (this rescues the case where the WebSocket
+  // dropped during the 10–20 s render and the server's first delivery
+  // attempt failed with `Cannot write to closing transport`).
+  const [exp4RequestedAt, setExp4RequestedAt] = useState<number | null>(null);
 
   // ── Exp8: resonance-air-column lab report (Python plots + Markdown + ZIP) ──
   const isExp8 = config.experimentNumber === '8';
@@ -411,6 +418,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       } else if (msg.type === 'exp4_report_ready' && msg.data) {
         setExp4ReportData(msg.data as Exp4ReportData);
         setExp4Progress('Report ready!');
+        setExp4RequestedAt(null);
       }
     });
     const poll = setInterval(() => { if (isaacService.isConnected()) isaacService.requestSimulationState(); }, 3000);
@@ -443,6 +451,14 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
             const cmd = (ctl as any)?.command;
             if (cmd) isaacService.sendCommand(cmd, value);
           });
+          // If we were waiting on an Exp 4 report when the socket dropped,
+          // ask the server for the cached payload now that we're back.
+          // The backend caches the most recent rendered report on
+          // self._exp4_report_cache and replies with `exp4_report_ready`
+          // (or an `exp4_progress` status frame).
+          if (config.experimentNumber === '4') {
+            isaacService.sendCommand('fetch_exp4_report', true);
+          }
         } catch (e) {
           console.warn('post-reconnect resync failed', e);
         }
@@ -462,6 +478,25 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     }, 30000);
     return () => window.clearTimeout(timer);
   }, [isExp5, exp5ExportStartedAt, exp5ReportData]);
+
+  // Exp 4 report watchdog: if we've been waiting > 25 s and still no payload
+  // arrived, re-request the cached version from the server. The backend
+  // caches every rendered report on self._exp4_report_cache, so this rescues
+  // the case where the original WebSocket transport closed during the
+  // synchronous CPU-bound render (≈10-20 s) and the first delivery failed
+  // silently with `Cannot write to closing transport` server-side.
+  useEffect(() => {
+    if (!isExp4 || exp4RequestedAt === null || exp4ReportData) return;
+    const tick = window.setInterval(() => {
+      if (isaacService.isConnected()) {
+        isaacService.sendCommand('fetch_exp4_report', true);
+      }
+    }, 8000);
+    const giveUp = window.setTimeout(() => {
+      setExp4Progress(prev => prev || 'No response from backend after 2 minutes — please retry.');
+    }, 120_000);
+    return () => { window.clearInterval(tick); window.clearTimeout(giveUp); };
+  }, [isExp4, exp4RequestedAt, exp4ReportData]);
 
   // ── Spin countdown ──
   useEffect(() => {
@@ -825,6 +860,20 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     URL.revokeObjectURL(url);
   }, [exp4ReportData]);
 
+  const exp8GeneratePDF = useCallback(async () => {
+    if (!exp8ReportData) {
+      alert('Click "Generate Full Report" first, then download the PDF after the report data is ready.');
+      return;
+    }
+    const blob = await pdf(<Exp8ReportPDF data={exp8ReportData as Exp8ReportData} />).toBlob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'Lab_Report_Resonance_Air_Column.pdf';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [exp8ReportData]);
+
   // ═══════════════════════════════════════════════════════════════════
   // Generic experiment handler (non-exp1)
   // ═══════════════════════════════════════════════════════════════════
@@ -841,6 +890,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
       if (isExp4) {
         setExp4Progress('');
         setExp4ReportData(null);
+        setExp4RequestedAt(null);
       }
       if (isExp5) {
         setExp5Progress('');
@@ -866,6 +916,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
     } else if (control.command === 'run_exp4_full_experiment') {
       setExp4ReportData(null);
       setExp4Progress('Starting Python report pipeline...');
+      setExp4RequestedAt(Date.now());
       isaacService.sendCommand(control.command, true);
     } else if (control.command === 'export_exp5_report' || control.command === 'run_exp5_report') {
       setExp5ReportData(null);
@@ -2057,6 +2108,10 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                     <img src={exp8ReportData.plots.probe_user} alt="Probe time-series" className="w-full rounded border border-gray-200" />
                   )}
                   <div className="flex flex-wrap gap-1">
+                    <button onClick={exp8GeneratePDF}
+                      className="px-2 py-1.5 text-[10px] font-mono font-bold bg-red-600 text-white rounded-lg hover:bg-red-700 shadow-sm">
+                      <FileText size={10} className="inline mr-1" />PDF Report
+                    </button>
                     {exp8ReportData.zip_b64 && (
                       <button onClick={() => downloadBase64File(
                         exp8ReportData.zip_b64,
@@ -2072,7 +2127,7 @@ const ExperimentView: React.FC<ExperimentViewProps> = ({ config, onBack }) => {
                         'Expt8_Resonance_Air_Column_Report.md',
                         'text/markdown',
                       )} className="px-2 py-1.5 text-[10px] font-mono bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100">
-                        <FileText size={10} className="inline mr-1" />Report (.md)
+                        <FileText size={10} className="inline mr-1" />Markdown
                       </button>
                     )}
                     {exp8ReportData.csv?.closed_L_vs_f && (

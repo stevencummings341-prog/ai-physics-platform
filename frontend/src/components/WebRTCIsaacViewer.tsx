@@ -36,6 +36,13 @@ const WebRTCIsaacViewer: React.FC<WebRTCIsaacViewerProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [transport, setTransport] = useState<TransportMode>('none');
   const [stats, setStats] = useState<ConnectionStats>({ fps: 0, bitrate: 0, packetsLost: 0, latency: 0 });
+  // Show the "Connection Failed" overlay only after sustained downtime
+  // (≥ 12 s).  This eats every transient blip caused by Isaac Sim's
+  // synchronous Kit calls (tl.stop/play, scene rebuild, mass apply).
+  // The browser's own ICE recovery is already running in parallel, so
+  // by the time this flag flips true we know the link is *really*
+  // broken and the user needs to be told.
+  const [showOfflineOverlay, setShowOfflineOverlay] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -529,6 +536,22 @@ const WebRTCIsaacViewer: React.FC<WebRTCIsaacViewerProps> = ({
     };
   }, []);
 
+  // Drive the "really offline" flag with a 12-second grace window so
+  // that brief asyncio blocks on the backend (scene rebuilds, tl.stop)
+  // never flash a scary overlay at the user.
+  useEffect(() => {
+    if (connected) {
+      setShowOfflineOverlay(false);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      // Only declare "Connection Failed" if we are *still* not connected
+      // and not actively in a reconnect attempt.
+      if (!connected) setShowOfflineOverlay(true);
+    }, 12_000);
+    return () => window.clearTimeout(t);
+  }, [connected, connecting]);
+
   const transportLabel = transport === 'webrtc' ? 'WebRTC' : transport === 'ws-jpeg' ? 'WS-JPEG' : '';
 
   return (
@@ -580,7 +603,8 @@ const WebRTCIsaacViewer: React.FC<WebRTCIsaacViewerProps> = ({
           style={{ display: transport === 'ws-jpeg' ? 'block' : 'none' }}
         />
 
-        {!connected && !connecting && (
+        {/* "Connection Failed" only after sustained (>12 s) downtime. */}
+        {!connected && !connecting && showOfflineOverlay && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/80 text-gray-400 pointer-events-none">
             <Activity size={48} className="mb-4 opacity-50" />
             <p>{error || 'Connection Failed'}</p>
@@ -593,7 +617,10 @@ const WebRTCIsaacViewer: React.FC<WebRTCIsaacViewerProps> = ({
           </div>
         )}
 
-        {connecting && (
+        {/* Lightweight "Reconnecting…" hint covers the grace window
+            and any active reconnect attempt — the user sees the
+            stream stay alive instead of a scary overlay. */}
+        {(connecting || (!connected && !showOfflineOverlay)) && (
           <div className="absolute top-2 right-2 text-[10px] font-mono text-yellow-300/90 select-none pointer-events-none bg-black/40 px-2 py-1 rounded">
             Reconnecting…
           </div>

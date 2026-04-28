@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-04-27-architecture-cleanup",
+  "last_updated": "2026-04-28-exp4-stuck-recovery",
   "project_name": "AI Physics Experiment Platform",
   "project_goal": "Full-stack physics experiment platform: Isaac Sim backend + React web frontend with WebRTC streaming, real-time telemetry, and interactive control.",
   "architecture": {

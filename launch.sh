@@ -224,7 +224,15 @@ cd "$FRONTEND_DIR"
 # unreachable), so dual-stack IPv6 binding is pointless here. All
 # reliable connection paths — Cursor's SSH tunnel, 127.0.0.1, the
 # server's external IP — are IPv4.
-npx vite --host 0.0.0.0 --port 5173 2>&1 | tee -a "$VITE_LOG" &
+#
+# IMPORTANT: redirect stdin from /dev/null. Vite reads stdin to
+# accept its interactive shortcut keys ("press h + enter to show
+# help"). If we leave stdin attached to the launcher's TTY, then
+# when the launcher's parent shell goes away (Cursor SSH session
+# refresh, terminal close, etc.) Vite crashes with EIO on TTY read
+# and silently kills the whole pipeline. Detach stdin so Vite never
+# touches the TTY.
+npx vite --host 0.0.0.0 --port 5173 < /dev/null 2>&1 | tee -a "$VITE_LOG" &
 TEE_PID=$!
 cd "$PROJECT_ROOT"
 
