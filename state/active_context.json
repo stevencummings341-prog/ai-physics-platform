@@ -1,5 +1,5 @@
 {
-  "last_updated": "2026-04-28-exp4-stuck-recovery",
+  "last_updated": "2026-04-28-post-presentation-cleanup",
   "project_name": "AI Physics Experiment Platform",
   "project_goal": "Full-stack physics experiment platform: Isaac Sim backend + React web frontend with WebRTC streaming, real-time telemetry, and interactive control.",
   "architecture": {
@@ -21,8 +21,9 @@
   ],
   "current_focus": [
     "All 8 experiments implemented (web interactive); 1/2/3/7 also have batch CLI",
-    "VR hand tracking integration — Meta Quest 3S → UDP → WebRTC server → experiment interaction",
-    "Architecture is clean (no dead root scripts, no duplicated PDFs, no orphaned packages)",
+    "VR hand tracking integration scaffolded but never field-verified (Quest 3S side not delivered)",
+    "Architecture stripped to platform-only after 2026-04-28 cleanup: outputs/, tools/, BACKUP_BEFORE_SHUTDOWN.md removed",
+    "Single-file AI memory dump now lives at docs/AI_CONTRIBUTION_ARCHIVE.md",
     "Preserve project continuity across agent sessions"
   ],
   "experiments": {
